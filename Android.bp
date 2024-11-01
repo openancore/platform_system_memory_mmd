@@ -1,0 +1,38 @@
+package {
+    default_applicable_licenses: ["Android-Apache-2.0"],
+}
+
+cc_binary {
+    name: "mm_daemon",
+    srcs: [
+        "mmd.cpp",
+    ],
+    defaults: [
+        "aconfig_lib_cc_shared_link.defaults",
+    ],
+    shared_libs: [
+        "liblog",
+        "server_configurable_flags",
+    ],
+    static_libs: [
+        "mmd_flags_c_lib",
+    ],
+    cflags: [
+        "-Wall",
+        "-Werror",
+        "-Wextra",
+    ],
+    stem: "mmd",
+}
+
+aconfig_declarations {
+    name: "mmd_flags",
+    package: "android.mmd.flags",
+    container: "system",
+    srcs: ["flags.aconfig"],
+}
+
+cc_aconfig_library {
+    name: "mmd_flags_c_lib",
+    aconfig_declarations: "mmd_flags",
+}
