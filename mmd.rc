@@ -1,0 +1,7 @@
+service mmd /system/bin/mmd
+    class core
+    user mmd
+    group mmd system
+    critical
+    # For calling swapon syscall
+    capabilities SYS_ADMIN
