@@ -12,18 +12,43 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::sync::Mutex;
+use std::time::Instant;
+
 use binder::Interface;
 use binder::Result as BinderResult;
-use log::info;
+use log::error;
 use mmd_aidl_interface::aidl::android::os::IMmd::IMmd;
 
-pub struct MmdService;
+use mmd::os::OpsImpl;
+use mmd::zram::writeback::Error as ZramWritebackError;
+use mmd::zram::writeback::ZramWriteback;
+
+pub struct MmdService {
+    zram_writeback: Mutex<ZramWriteback>,
+}
+
+impl MmdService {
+    pub fn new() -> Self {
+        Self { zram_writeback: Mutex::new(ZramWriteback::new()) }
+    }
+}
 
 impl Interface for MmdService {}
 
 impl IMmd for MmdService {
     fn doZramMaintenance(&self) -> BinderResult<()> {
-        info!("doZramMaintenance");
+        let mut zram_writeback = self.zram_writeback.lock().expect("mmd aborts on panics");
+        let params = load_zram_writeback_params();
+        match zram_writeback.mark_and_flush_pages::<OpsImpl>(&params, Instant::now()) {
+            Ok(_) | Err(ZramWritebackError::BackoffTime) => {}
+            Err(e) => error!("failed to zram writeback: {e:?}"),
+        }
         Ok(())
     }
+}
+
+fn load_zram_writeback_params() -> mmd::zram::writeback::Params {
+    // TODO: load params from system properties.
+    mmd::zram::writeback::Params::default()
 }
