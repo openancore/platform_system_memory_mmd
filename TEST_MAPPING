@@ -1,0 +1,7 @@
+{
+  "postsubmit": [
+    {
+      "name": "mmd_unit_tests"
+    }
+  ]
+}
