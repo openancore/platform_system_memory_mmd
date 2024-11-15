@@ -36,3 +36,8 @@ cc_aconfig_library {
     name: "mmd_flags_c_lib",
     aconfig_declarations: "mmd_flags",
 }
+
+java_aconfig_library {
+    name: "mmd_flags_lib",
+    aconfig_declarations: "mmd_flags",
+}
