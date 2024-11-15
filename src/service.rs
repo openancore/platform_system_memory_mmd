@@ -15,6 +15,7 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
+use anyhow::Context;
 use binder::Interface;
 use binder::Result as BinderResult;
 use log::error;
@@ -29,8 +30,8 @@ pub struct MmdService {
 }
 
 impl MmdService {
-    pub fn new() -> Self {
-        Self { zram_writeback: Mutex::new(ZramWriteback::new()) }
+    pub fn new(zram_writeback: ZramWriteback) -> Self {
+        Self { zram_writeback: Mutex::new(zram_writeback) }
     }
 }
 
@@ -40,8 +41,15 @@ impl IMmd for MmdService {
     fn doZramMaintenance(&self) -> BinderResult<()> {
         let mut zram_writeback = self.zram_writeback.lock().expect("mmd aborts on panics");
         let params = load_zram_writeback_params();
-        match zram_writeback.mark_and_flush_pages::<OpsImpl>(&params, Instant::now()) {
-            Ok(_) | Err(ZramWritebackError::BackoffTime) => {}
+        let stats = match load_zram_writeback_stats() {
+            Ok(v) => v,
+            Err(e) => {
+                error!("failed to load zram writeback stats: {e:?}");
+                return Ok(());
+            }
+        };
+        match zram_writeback.mark_and_flush_pages::<OpsImpl>(&params, &stats, Instant::now()) {
+            Ok(_) | Err(ZramWritebackError::BackoffTime) | Err(ZramWritebackError::Limit) => {}
             Err(e) => error!("failed to zram writeback: {e:?}"),
         }
         Ok(())
@@ -51,4 +59,13 @@ impl IMmd for MmdService {
 fn load_zram_writeback_params() -> mmd::zram::writeback::Params {
     // TODO: load params from system properties.
     mmd::zram::writeback::Params::default()
+}
+
+fn load_zram_writeback_stats() -> anyhow::Result<mmd::zram::writeback::Stats> {
+    let mm_stat = mmd::zram::stats::ZramMmStat::load::<OpsImpl>().context("load mm_stat")?;
+    let bd_stat = mmd::zram::stats::ZramBdStat::load::<OpsImpl>().context("load bd_stat")?;
+    Ok(mmd::zram::writeback::Stats {
+        orig_data_size: mm_stat.orig_data_size,
+        current_writeback_pages: bd_stat.bd_count_pages,
+    })
 }
