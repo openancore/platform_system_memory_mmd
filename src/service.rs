@@ -26,11 +26,11 @@ use mmd::zram::writeback::Error as ZramWritebackError;
 use mmd::zram::writeback::ZramWriteback;
 
 pub struct MmdService {
-    zram_writeback: Mutex<ZramWriteback>,
+    zram_writeback: Mutex<Option<ZramWriteback>>,
 }
 
 impl MmdService {
-    pub fn new(zram_writeback: ZramWriteback) -> Self {
+    pub fn new(zram_writeback: Option<ZramWriteback>) -> Self {
         Self { zram_writeback: Mutex::new(zram_writeback) }
     }
 }
@@ -40,17 +40,19 @@ impl Interface for MmdService {}
 impl IMmd for MmdService {
     fn doZramMaintenance(&self) -> BinderResult<()> {
         let mut zram_writeback = self.zram_writeback.lock().expect("mmd aborts on panics");
-        let params = load_zram_writeback_params();
-        let stats = match load_zram_writeback_stats() {
-            Ok(v) => v,
-            Err(e) => {
-                error!("failed to load zram writeback stats: {e:?}");
-                return Ok(());
+        if let Some(zram_writeback) = zram_writeback.as_mut() {
+            let params = load_zram_writeback_params();
+            let stats = match load_zram_writeback_stats() {
+                Ok(v) => v,
+                Err(e) => {
+                    error!("failed to load zram writeback stats: {e:?}");
+                    return Ok(());
+                }
+            };
+            match zram_writeback.mark_and_flush_pages::<OpsImpl>(&params, &stats, Instant::now()) {
+                Ok(_) | Err(ZramWritebackError::BackoffTime) | Err(ZramWritebackError::Limit) => {}
+                Err(e) => error!("failed to zram writeback: {e:?}"),
             }
-        };
-        match zram_writeback.mark_and_flush_pages::<OpsImpl>(&params, &stats, Instant::now()) {
-            Ok(_) | Err(ZramWritebackError::BackoffTime) | Err(ZramWritebackError::Limit) => {}
-            Err(e) => error!("failed to zram writeback: {e:?}"),
         }
         Ok(())
     }

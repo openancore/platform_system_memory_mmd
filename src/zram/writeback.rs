@@ -31,6 +31,7 @@ use crate::zram::idle::calculate_idle_time;
 use crate::zram::idle::set_zram_idle_time;
 use crate::zram::writeback::history::ZramWritebackHistory;
 
+const ZRAM_BACKING_DEV_PATH: &str = "/sys/block/zram0/backing_dev";
 const ZRAM_WRITEBACK_PATH: &str = "/sys/block/zram0/writeback";
 const ZRAM_WRITEBACK_LIMIT_PATH: &str = "/sys/block/zram0/writeback_limit";
 
@@ -61,6 +62,18 @@ pub enum Error {
 }
 
 type Result<T> = std::result::Result<T, Error>;
+
+/// Whether the zram writeback is activated on the device or not.
+pub fn is_zram_writeback_activated<O: Ops>() -> std::io::Result<bool> {
+    match O::read_to_string(ZRAM_BACKING_DEV_PATH) {
+        // If /sys/block/zram0/backing_dev is "none", zram writeback is not configured yet.
+        Ok(backing_dev) => Ok(backing_dev != "none"),
+        // If it can't access /sys/block/zram0/backing_dev, zram writeback feature is disabled on
+        // the kernel.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
 
 /// The parameters for zram writeback.
 pub struct Params {
