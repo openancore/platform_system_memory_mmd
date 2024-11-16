@@ -2,27 +2,29 @@ package {
     default_applicable_licenses: ["Android-Apache-2.0"],
 }
 
-cc_binary {
-    name: "mm_daemon",
+rust_defaults {
+    name: "mmd_defaults",
     srcs: [
-        "mmd.cpp",
+        "src/main.rs",
     ],
-    defaults: [
-        "aconfig_lib_cc_shared_link.defaults",
+    rustlibs: [
+        "liblogger",
+        "liblog_rust",
+        "libmmd_flags_rust",
     ],
-    shared_libs: [
-        "liblog",
-        "server_configurable_flags",
-    ],
-    static_libs: [
-        "mmd_flags_c_lib",
-    ],
-    cflags: [
-        "-Wall",
-        "-Werror",
-        "-Wextra",
-    ],
+}
+
+rust_binary {
+    name: "mm_daemon",
+    defaults: ["mmd_defaults"],
     stem: "mmd",
+}
+
+rust_test {
+    name: "mmd_unit_tests",
+    defaults: ["mmd_defaults"],
+    test_suites: ["general-tests"],
+    auto_gen_config: true,
 }
 
 aconfig_declarations {
@@ -32,7 +34,13 @@ aconfig_declarations {
     srcs: ["flags.aconfig"],
 }
 
-cc_aconfig_library {
-    name: "mmd_flags_c_lib",
+rust_aconfig_library {
+    name: "libmmd_flags_rust",
+    crate_name: "mmd_flags",
+    aconfig_declarations: "mmd_flags",
+}
+
+java_aconfig_library {
+    name: "mmd_flags_lib",
     aconfig_declarations: "mmd_flags",
 }
