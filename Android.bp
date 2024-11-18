@@ -18,6 +18,7 @@ rust_binary {
     name: "mm_daemon",
     defaults: ["mmd_defaults"],
     stem: "mmd",
+    init_rc: ["mmd.rc"],
 }
 
 rust_test {
