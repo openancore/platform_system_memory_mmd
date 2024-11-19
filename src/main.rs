@@ -18,6 +18,7 @@
 
 use log::info;
 use log::LevelFilter;
+use std::time::Duration;
 
 fn main() {
     let _init_success = logger::init(
@@ -25,10 +26,16 @@ fn main() {
     );
     if !mmd_flags::mmd_enabled() {
         info!("mmd is disabled");
-        return;
+        loop {
+            std::thread::sleep(Duration::MAX);
+        }
     }
 
     info!("mmd started");
+    // TODO(b/375432468): remove the sleep loop when binder service is set up.
+    loop {
+        std::thread::sleep(Duration::MAX);
+    }
 }
 
 #[cfg(test)]
