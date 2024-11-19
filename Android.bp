@@ -8,9 +8,11 @@ rust_defaults {
         "src/main.rs",
     ],
     rustlibs: [
+        "libbinder_rs",
         "liblogger",
         "liblog_rust",
         "libmmd_flags_rust",
+        "mmd_aidl_interface-rust",
     ],
 }
 
@@ -44,4 +46,24 @@ rust_aconfig_library {
 java_aconfig_library {
     name: "mmd_flags_lib",
     aconfig_declarations: "mmd_flags",
+}
+
+aidl_interface {
+    name: "mmd_aidl_interface",
+    unstable: true,
+    srcs: [":mmd_aidl"],
+    local_include_dir: "aidl",
+    backend: {
+        rust: {
+            enabled: true,
+        },
+    },
+}
+
+filegroup {
+    name: "mmd_aidl",
+    srcs: [
+        "aidl/android/os/IMmd.aidl",
+    ],
+    path: "aidl",
 }
