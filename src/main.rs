@@ -16,9 +16,14 @@
 //!
 //! * zram
 
+mod service;
+
+use std::time::Duration;
+
+use binder::BinderFeatures;
 use log::info;
 use log::LevelFilter;
-use std::time::Duration;
+use mmd_aidl_interface::aidl::android::os::IMmd::BnMmd;
 
 fn main() {
     let _init_success = logger::init(
@@ -31,11 +36,13 @@ fn main() {
         }
     }
 
+    let mmd_service = service::MmdService;
+    let mmd_service_binder = BnMmd::new_binder(mmd_service, BinderFeatures::default());
+    binder::add_service("mmd", mmd_service_binder.as_binder()).expect("register service");
+
     info!("mmd started");
-    // TODO(b/375432468): remove the sleep loop when binder service is set up.
-    loop {
-        std::thread::sleep(Duration::MAX);
-    }
+
+    binder::ProcessState::join_thread_pool()
 }
 
 #[cfg(test)]
