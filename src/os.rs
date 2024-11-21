@@ -48,3 +48,9 @@ impl Ops for OpsImpl {
         std::fs::write(path, contents)
     }
 }
+
+/// Returns the page size of the system.
+pub fn get_page_size() -> u64 {
+    // SAFETY: `sysconf` simply returns an integer.
+    unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
+}
