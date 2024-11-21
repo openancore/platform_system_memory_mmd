@@ -26,8 +26,12 @@ use log::info;
 use log::LevelFilter;
 use mmd::os::OpsImpl;
 use mmd::zram::stats::load_total_zram_size;
+use mmd::zram::writeback::is_zram_writeback_activated;
 use mmd::zram::writeback::ZramWriteback;
 use mmd_aidl_interface::aidl::android::os::IMmd::BnMmd;
+
+// In Android zram writeback file is always "/data/per_boot/zram_swap".
+const ZRAM_WRITEBACK_FILE_PATH: &str = "/data/per_boot/zram_swap";
 
 fn main() {
     let _init_success = logger::init(
@@ -51,8 +55,20 @@ fn main() {
             std::process::exit(1);
         }
     };
-    // TODO: load zram writeback size.
-    let zram_writeback = ZramWriteback::new(total_zram_size, total_zram_size);
+    let zram_writeback = match load_zram_writeback_disk_size() {
+        Ok(Some(zram_writeback_disk_size)) => {
+            info!("zram writeback is enabled");
+            Some(ZramWriteback::new(total_zram_size, zram_writeback_disk_size))
+        }
+        Ok(None) => {
+            info!("zram writeback is disabled");
+            None
+        }
+        Err(e) => {
+            error!("failed to load zram writeback file size: {e:?}");
+            None
+        }
+    };
 
     let mmd_service = service::MmdService::new(zram_writeback);
     let mmd_service_binder = BnMmd::new_binder(mmd_service, BinderFeatures::default());
@@ -61,6 +77,17 @@ fn main() {
     info!("mmd started");
 
     binder::ProcessState::join_thread_pool();
+}
+
+/// Loads the zram writeback disk size.
+///
+/// If zram writeback is not enabled, this returns `Ok(None)`.
+pub fn load_zram_writeback_disk_size() -> std::io::Result<Option<u64>> {
+    if is_zram_writeback_activated::<OpsImpl>()? {
+        Ok(Some(std::fs::metadata(ZRAM_WRITEBACK_FILE_PATH)?.len()))
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]

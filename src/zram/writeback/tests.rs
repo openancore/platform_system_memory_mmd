@@ -42,6 +42,51 @@ fn setup_default_writeback_limit_read(
 }
 
 #[test]
+fn test_is_zram_writeback_activated() {
+    let _m = OPS_MTX.lock();
+    let rmock = MockOps::read_to_string_context();
+    rmock
+        .expect()
+        .withf(path_params(ZRAM_BACKING_DEV_PATH))
+        .returning(|_| Ok("/dev/dm-1".to_string()));
+
+    assert!(is_zram_writeback_activated::<MockOps>().unwrap());
+}
+
+#[test]
+fn test_load_zram_writeback_disk_size_writeback_is_not_enabled() {
+    let _m = OPS_MTX.lock();
+    let rmock = MockOps::read_to_string_context();
+    rmock.expect().withf(path_params(ZRAM_BACKING_DEV_PATH)).returning(|_| Ok("none".to_string()));
+
+    assert!(!is_zram_writeback_activated::<MockOps>().unwrap());
+}
+
+#[test]
+fn test_is_zram_writeback_activated_writeback_is_not_supported() {
+    let _m = OPS_MTX.lock();
+    let rmock = MockOps::read_to_string_context();
+    rmock
+        .expect()
+        .withf(path_params(ZRAM_BACKING_DEV_PATH))
+        .returning(|_| Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found")));
+
+    assert!(!is_zram_writeback_activated::<MockOps>().unwrap());
+}
+
+#[test]
+fn test_is_zram_writeback_activated_failure() {
+    let _m = OPS_MTX.lock();
+    let rmock = MockOps::read_to_string_context();
+    rmock
+        .expect()
+        .withf(path_params(ZRAM_BACKING_DEV_PATH))
+        .returning(|_| Err(std::io::Error::other("error")));
+
+    assert!(is_zram_writeback_activated::<MockOps>().is_err());
+}
+
+#[test]
 fn mark_and_flush_pages() {
     let _m = OPS_MTX.lock();
     let mut seq = Sequence::new();
