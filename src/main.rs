@@ -21,8 +21,12 @@ mod service;
 use std::time::Duration;
 
 use binder::BinderFeatures;
+use log::error;
 use log::info;
 use log::LevelFilter;
+use mmd::os::OpsImpl;
+use mmd::zram::stats::load_total_zram_size;
+use mmd::zram::writeback::ZramWriteback;
 use mmd_aidl_interface::aidl::android::os::IMmd::BnMmd;
 
 fn main() {
@@ -36,13 +40,27 @@ fn main() {
         }
     }
 
-    let mmd_service = service::MmdService::new();
+    // TODO: This is to wait until swapon_all command sets up zram. Remove this when mmd sets up
+    // zram.
+    std::thread::sleep(Duration::from_secs(60));
+
+    let total_zram_size = match load_total_zram_size::<OpsImpl>() {
+        Ok(v) => v,
+        Err(e) => {
+            error!("failed to load total zram size: {e:?}");
+            std::process::exit(1);
+        }
+    };
+    // TODO: load zram writeback size.
+    let zram_writeback = ZramWriteback::new(total_zram_size, total_zram_size);
+
+    let mmd_service = service::MmdService::new(zram_writeback);
     let mmd_service_binder = BnMmd::new_binder(mmd_service, BinderFeatures::default());
     binder::add_service("mmd", mmd_service_binder.as_binder()).expect("register service");
 
     info!("mmd started");
 
-    binder::ProcessState::join_thread_pool()
+    binder::ProcessState::join_thread_pool();
 }
 
 #[cfg(test)]

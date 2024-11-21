@@ -25,6 +25,7 @@ rust_defaults {
         "src/lib.rs",
     ],
     rustlibs: [
+        "liblibc",
         "libmockall",
         "libthiserror",
     ],
