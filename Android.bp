@@ -8,11 +8,25 @@ rust_defaults {
         "src/main.rs",
     ],
     rustlibs: [
+        "libanyhow",
         "libbinder_rs",
         "liblogger",
         "liblog_rust",
+        "libmmd",
         "libmmd_flags_rust",
+        "libmockall",
         "mmd_aidl_interface-rust",
+    ],
+}
+
+rust_defaults {
+    name: "libmmd_defaults",
+    srcs: [
+        "src/lib.rs",
+    ],
+    rustlibs: [
+        "libmockall",
+        "libthiserror",
     ],
 }
 
@@ -23,11 +37,24 @@ rust_binary {
     init_rc: ["mmd.rc"],
 }
 
+rust_library {
+    name: "libmmd",
+    crate_name: "mmd",
+    defaults: ["libmmd_defaults"],
+    host_supported: true,
+}
+
 rust_test {
     name: "mmd_unit_tests",
     defaults: ["mmd_defaults"],
     test_suites: ["general-tests"],
     auto_gen_config: true,
+}
+
+rust_test_host {
+    name: "libmmd_unit_tests",
+    defaults: ["libmmd_defaults"],
+    test_suites: ["general-tests"],
 }
 
 aconfig_declarations {
