@@ -12,18 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+//! This module provides the interface for CONFIG_ZRAM_MEMORY_TRACKING feature.
+
 use std::time::Duration;
 
-use crate::os::Ops;
-
-pub const ZRAM_IDLE_PATH: &str = "/sys/block/zram0/idle";
-pub const MEMINFO_PATH: &str = "/proc/meminfo";
+use crate::os::MeminfoApi;
+use crate::zram::SysfsZramApi;
 
 /// Sets idle duration in seconds to "/sys/block/zram0/idle".
 ///
 /// Fractions of a second are truncated.
-pub fn set_zram_idle_time<O: Ops>(idle_age: Duration) -> std::io::Result<()> {
-    O::write(ZRAM_IDLE_PATH, idle_age.as_secs().to_string())
+pub fn set_zram_idle_time<Z: SysfsZramApi>(idle_age: Duration) -> std::io::Result<()> {
+    Z::set_idle(&idle_age.as_secs().to_string())
 }
 
 /// This parses the content of "/proc/meminfo" and returns the number of "MemTotal" and
@@ -62,23 +62,26 @@ fn parse_meminfo(content: &str) -> Option<(u64, u64)> {
 /// Error from [calculate_idle_time].
 #[derive(Debug, thiserror::Error)]
 pub enum CalculateError {
+    /// min_idle is longer than max_idle
     #[error("min_idle is longer than max_idle")]
     InvalidMinAndMax,
+    /// failed to parse meminfo
     #[error("failed to parse meminfo")]
     InvalidMeminfo,
+    /// failed to read meminfo
     #[error("failed to read meminfo: {0}")]
     ReadMeminfo(std::io::Error),
 }
 
 /// Calculates idle duration from min_idle and max_idle using meminfo.
-pub fn calculate_idle_time<O: Ops>(
+pub fn calculate_idle_time<M: MeminfoApi>(
     min_idle: Duration,
     max_idle: Duration,
 ) -> std::result::Result<Duration, CalculateError> {
     if min_idle > max_idle {
         return Err(CalculateError::InvalidMinAndMax);
     }
-    let content = match O::read_to_string(MEMINFO_PATH) {
+    let content = match M::read_meminfo() {
         Ok(v) => v,
         Err(e) => return Err(CalculateError::ReadMeminfo(e)),
     };
@@ -107,27 +110,30 @@ pub fn calculate_idle_time<O: Ops>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::os::MockOps;
-    use crate::test_helper::path_params;
-    use crate::test_helper::write_params;
-    use crate::test_helper::OPS_MTX;
+
+    use mockall::predicate::*;
+
+    use crate::os::MockMeminfoApi;
+    use crate::os::MEMINFO_API_MTX;
+    use crate::zram::MockSysfsZramApi;
+    use crate::zram::ZRAM_API_MTX;
 
     #[test]
     fn test_set_zram_idle_time() {
-        let _m = OPS_MTX.lock();
-        let mock = MockOps::write_context();
-        mock.expect().withf(write_params(ZRAM_IDLE_PATH, "3600")).returning(|_, _| Ok(()));
+        let _m = ZRAM_API_MTX.lock();
+        let mock = MockSysfsZramApi::set_idle_context();
+        mock.expect().with(eq("3600")).returning(|_| Ok(()));
 
-        assert!(set_zram_idle_time::<MockOps>(Duration::from_secs(3600)).is_ok());
+        assert!(set_zram_idle_time::<MockSysfsZramApi>(Duration::from_secs(3600)).is_ok());
     }
 
     #[test]
     fn test_set_zram_idle_time_in_seconds() {
-        let _m = OPS_MTX.lock();
-        let mock = MockOps::write_context();
-        mock.expect().withf(write_params(ZRAM_IDLE_PATH, "3600")).returning(|_, _| Ok(()));
+        let _m = ZRAM_API_MTX.lock();
+        let mock = MockSysfsZramApi::set_idle_context();
+        mock.expect().with(eq("3600")).returning(|_| Ok(()));
 
-        assert!(set_zram_idle_time::<MockOps>(Duration::from_millis(3600567)).is_ok());
+        assert!(set_zram_idle_time::<MockSysfsZramApi>(Duration::from_millis(3600567)).is_ok());
     }
 
     #[test]
@@ -169,30 +175,36 @@ MemFree:        12345 kB
 
     #[test]
     fn test_calculate_idle_time() {
-        let _m = OPS_MTX.lock();
-        let mock = MockOps::read_to_string_context();
+        let _m = MEMINFO_API_MTX.lock();
+        let mock = MockMeminfoApi::read_meminfo_context();
         let meminfo = "MemTotal: 8144296 kB
     MemAvailable: 346452 kB";
-        mock.expect().withf(path_params(MEMINFO_PATH)).returning(|_| Ok(meminfo.to_string()));
+        mock.expect().returning(|| Ok(meminfo.to_string()));
 
         assert_eq!(
-            calculate_idle_time::<MockOps>(Duration::from_secs(72000), Duration::from_secs(90000))
-                .unwrap(),
+            calculate_idle_time::<MockMeminfoApi>(
+                Duration::from_secs(72000),
+                Duration::from_secs(90000)
+            )
+            .unwrap(),
             Duration::from_secs(72150)
         );
     }
 
     #[test]
     fn test_calculate_idle_time_same_min_max() {
-        let _m = OPS_MTX.lock();
-        let mock = MockOps::read_to_string_context();
+        let _m = MEMINFO_API_MTX.lock();
+        let mock = MockMeminfoApi::read_meminfo_context();
         let meminfo = "MemTotal: 8144296 kB
     MemAvailable: 346452 kB";
-        mock.expect().withf(path_params(MEMINFO_PATH)).returning(|_| Ok(meminfo.to_string()));
+        mock.expect().returning(|| Ok(meminfo.to_string()));
 
         assert_eq!(
-            calculate_idle_time::<MockOps>(Duration::from_secs(90000), Duration::from_secs(90000))
-                .unwrap(),
+            calculate_idle_time::<MockMeminfoApi>(
+                Duration::from_secs(90000),
+                Duration::from_secs(90000)
+            )
+            .unwrap(),
             Duration::from_secs(90000)
         );
     }
@@ -200,63 +212,76 @@ MemFree:        12345 kB
     #[test]
     fn test_calculate_idle_time_min_is_bigger_than_max() {
         assert!(matches!(
-            calculate_idle_time::<MockOps>(Duration::from_secs(90000), Duration::from_secs(72000)),
+            calculate_idle_time::<MockMeminfoApi>(
+                Duration::from_secs(90000),
+                Duration::from_secs(72000)
+            ),
             Err(CalculateError::InvalidMinAndMax)
         ));
     }
 
     #[test]
     fn test_calculate_idle_time_no_available() {
-        let _m = OPS_MTX.lock();
-        let mock = MockOps::read_to_string_context();
+        let _m = MEMINFO_API_MTX.lock();
+        let mock = MockMeminfoApi::read_meminfo_context();
         let meminfo = "MemTotal: 8144296 kB
     MemAvailable: 0 kB";
-        mock.expect().withf(path_params(MEMINFO_PATH)).returning(|_| Ok(meminfo.to_string()));
+        mock.expect().returning(|| Ok(meminfo.to_string()));
 
         assert_eq!(
-            calculate_idle_time::<MockOps>(Duration::from_secs(72000), Duration::from_secs(90000))
-                .unwrap(),
+            calculate_idle_time::<MockMeminfoApi>(
+                Duration::from_secs(72000),
+                Duration::from_secs(90000)
+            )
+            .unwrap(),
             Duration::from_secs(72121)
         );
     }
 
     #[test]
     fn test_calculate_idle_time_meminfo_fail() {
-        let _m = OPS_MTX.lock();
-        let mock = MockOps::read_to_string_context();
-        mock.expect()
-            .withf(path_params(MEMINFO_PATH))
-            .returning(|_| Err(std::io::Error::other("error")));
+        let _m = MEMINFO_API_MTX.lock();
+        let mock = MockMeminfoApi::read_meminfo_context();
+        mock.expect().returning(|| Err(std::io::Error::other("error")));
 
         assert!(matches!(
-            calculate_idle_time::<MockOps>(Duration::from_secs(72000), Duration::from_secs(90000)),
+            calculate_idle_time::<MockMeminfoApi>(
+                Duration::from_secs(72000),
+                Duration::from_secs(90000)
+            ),
             Err(CalculateError::ReadMeminfo(_))
         ));
     }
 
     #[test]
     fn test_calculate_idle_time_invalid_meminfo() {
-        let _m = OPS_MTX.lock();
-        let mock = MockOps::read_to_string_context();
+        let _m = MEMINFO_API_MTX.lock();
+        let mock = MockMeminfoApi::read_meminfo_context();
         let meminfo = "";
-        mock.expect().withf(path_params(MEMINFO_PATH)).returning(|_| Ok(meminfo.to_string()));
+        mock.expect().returning(|| Ok(meminfo.to_string()));
 
         assert!(matches!(
-            calculate_idle_time::<MockOps>(Duration::from_secs(72000), Duration::from_secs(90000)),
+            calculate_idle_time::<MockMeminfoApi>(
+                Duration::from_secs(72000),
+                Duration::from_secs(90000)
+            ),
             Err(CalculateError::InvalidMeminfo)
         ));
     }
 
     #[test]
     fn test_calculate_idle_time_zero_total_memory() {
-        let _m = OPS_MTX.lock();
-        let mock = MockOps::read_to_string_context();
+        let _m = MEMINFO_API_MTX.lock();
+        let mock = MockMeminfoApi::read_meminfo_context();
         let meminfo = "MemTotal: 0 kB
     MemAvailable: 346452 kB";
-        mock.expect().withf(path_params(MEMINFO_PATH)).returning(|_| Ok(meminfo.to_string()));
+        mock.expect().returning(|| Ok(meminfo.to_string()));
 
         assert!(matches!(
-            calculate_idle_time::<MockOps>(Duration::from_secs(72000), Duration::from_secs(90000)),
+            calculate_idle_time::<MockMeminfoApi>(
+                Duration::from_secs(72000),
+                Duration::from_secs(90000)
+            ),
             Err(CalculateError::InvalidMeminfo)
         ));
     }

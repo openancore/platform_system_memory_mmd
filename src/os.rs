@@ -12,42 +12,35 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! This module provides mockable interface and its implementation of os
-//! operations.
+//! This module provides os layer utilities.
 
 use std::io;
-use std::path::Path;
 
-/// [Ops] is the mockable interface for accesses to system global os properties
-/// (e.g. read/write on procfs, sysfs).
-///
-/// generic functions with AsRef requires #[mockall::concretize] which has a
-/// downside that we can't use `.with` but need to use `.withf` or `.withf_st`.
-///
-/// https://docs.rs/mockall/latest/mockall/attr.concretize.html
-///
-/// `mod test_helpers` defines helper macros to generate matcher for `.withf`.
+const MEMINFO_PATH: &str = "/proc/meminfo";
+
+/// [MeminfoApi] is a mockable interface for access to "/proc/meminfo".
 #[cfg_attr(test, mockall::automock)]
-pub trait Ops {
-    /// mockable wrapper for [std::fs::read_to_string].
-    #[mockall::concretize]
-    fn read_to_string<P: AsRef<Path>>(path: P) -> io::Result<String>;
-    /// mockable wrapper for [std::fs::write].
-    #[mockall::concretize]
-    fn write<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, contents: C) -> io::Result<()>;
+pub trait MeminfoApi {
+    /// read "/proc/meminfo".
+    fn read_meminfo() -> io::Result<String>;
 }
 
-/// Real implementation of [Ops].
-pub struct OpsImpl;
+/// The implementation of [MeminfoApi].
+pub struct MeminfoApiImpl;
 
-impl Ops for OpsImpl {
-    fn read_to_string<P: AsRef<Path>>(path: P) -> io::Result<String> {
-        std::fs::read_to_string(path)
-    }
-    fn write<P: AsRef<Path>, C: AsRef<[u8]>>(path: P, contents: C) -> io::Result<()> {
-        std::fs::write(path, contents)
+impl MeminfoApi for MeminfoApiImpl {
+    fn read_meminfo() -> io::Result<String> {
+        std::fs::read_to_string(MEMINFO_PATH)
     }
 }
+
+/// Mutex to synchronize tests using [MeminfoApi].
+///
+/// mockall for static functions requires synchronization.
+///
+/// https://docs.rs/mockall/latest/mockall/#static-methods
+#[cfg(test)]
+pub static MEMINFO_API_MTX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Returns the page size of the system.
 pub fn get_page_size() -> u64 {

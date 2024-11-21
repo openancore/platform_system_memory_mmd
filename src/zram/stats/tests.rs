@@ -14,50 +14,47 @@
 
 use super::*;
 
-use crate::os::MockOps;
-use crate::test_helper::path_params;
-use crate::test_helper::OPS_MTX;
+use crate::zram::MockSysfsZramApi;
+use crate::zram::ZRAM_API_MTX;
 
 #[test]
 fn test_load_total_zram_size() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_disksize_context();
     let contents = "12345\n";
-    mock.expect().withf(path_params(ZRAM_DISKSIZE_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
-    assert_eq!(load_total_zram_size::<MockOps>().unwrap(), 12345);
+    assert_eq!(load_total_zram_size::<MockSysfsZramApi>().unwrap(), 12345);
 }
 
 #[test]
 fn test_load_total_zram_size_invalid_value() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_disksize_context();
     let contents = "a";
-    mock.expect().withf(path_params(ZRAM_DISKSIZE_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
-    assert!(load_total_zram_size::<MockOps>().is_err());
+    assert!(load_total_zram_size::<MockSysfsZramApi>().is_err());
 }
 
 #[test]
 fn test_load_total_zram_size_fail_read() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
-    mock.expect()
-        .withf(path_params(ZRAM_DISKSIZE_PATH))
-        .returning(|_| Err(std::io::Error::other("error")));
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_disksize_context();
+    mock.expect().returning(|| Err(std::io::Error::other("error")));
 
-    assert!(load_total_zram_size::<MockOps>().is_err());
+    assert!(load_total_zram_size::<MockSysfsZramApi>().is_err());
 }
 
 #[test]
 fn test_zram_mm_stat() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_mm_stat_context();
     let contents = " 1 2 3 4 5 6 7 8 9";
-    mock.expect().withf(path_params(ZRAM_MM_STAT_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
     assert_eq!(
-        ZramMmStat::load::<MockOps>().unwrap(),
+        ZramMmStat::load::<MockSysfsZramApi>().unwrap(),
         ZramMmStat {
             orig_data_size: 1,
             compr_data_size: 2,
@@ -74,13 +71,13 @@ fn test_zram_mm_stat() {
 
 #[test]
 fn test_zram_mm_stat_skip_huge_pages_since() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_mm_stat_context();
     let contents = " 1 2 3 4 5 6 7 8";
-    mock.expect().withf(path_params(ZRAM_MM_STAT_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
     assert_eq!(
-        ZramMmStat::load::<MockOps>().unwrap(),
+        ZramMmStat::load::<MockSysfsZramApi>().unwrap(),
         ZramMmStat {
             orig_data_size: 1,
             compr_data_size: 2,
@@ -97,13 +94,13 @@ fn test_zram_mm_stat_skip_huge_pages_since() {
 
 #[test]
 fn test_zram_mm_stat_skip_huge_pages() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_mm_stat_context();
     let contents = " 1 2 3 4 5 6 7";
-    mock.expect().withf(path_params(ZRAM_MM_STAT_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
     assert_eq!(
-        ZramMmStat::load::<MockOps>().unwrap(),
+        ZramMmStat::load::<MockSysfsZramApi>().unwrap(),
         ZramMmStat {
             orig_data_size: 1,
             compr_data_size: 2,
@@ -120,13 +117,13 @@ fn test_zram_mm_stat_skip_huge_pages() {
 
 #[test]
 fn test_zram_mm_stat_negative_mem_used_max() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_mm_stat_context();
     let contents = " 1 2 3 4 -5 6 7 8 9";
-    mock.expect().withf(path_params(ZRAM_MM_STAT_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
     assert_eq!(
-        ZramMmStat::load::<MockOps>().unwrap(),
+        ZramMmStat::load::<MockSysfsZramApi>().unwrap(),
         ZramMmStat {
             orig_data_size: 1,
             compr_data_size: 2,
@@ -143,75 +140,71 @@ fn test_zram_mm_stat_negative_mem_used_max() {
 
 #[test]
 fn test_zram_mm_stat_fail_read() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
-    mock.expect()
-        .withf(path_params(ZRAM_MM_STAT_PATH))
-        .returning(|_| Err(std::io::Error::other("error")));
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_mm_stat_context();
+    mock.expect().returning(|| Err(std::io::Error::other("error")));
 
-    assert!(ZramMmStat::load::<MockOps>().is_err());
+    assert!(ZramMmStat::load::<MockSysfsZramApi>().is_err());
 }
 
 #[test]
 fn test_zram_mm_stat_less_values() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_mm_stat_context();
     let contents = " 1 2 3 4 5 6";
-    mock.expect().withf(path_params(ZRAM_MM_STAT_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
-    assert!(ZramMmStat::load::<MockOps>().is_err());
+    assert!(ZramMmStat::load::<MockSysfsZramApi>().is_err());
 }
 
 #[test]
 fn test_zram_mm_stat_invalid_value() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_mm_stat_context();
     let contents = " 1 2 3 4 5 6 a";
-    mock.expect().withf(path_params(ZRAM_MM_STAT_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
-    assert!(ZramMmStat::load::<MockOps>().is_err());
+    assert!(ZramMmStat::load::<MockSysfsZramApi>().is_err());
 }
 
 #[test]
 fn test_zram_bd_stat() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_bd_stat_context();
     let contents = "1 2 3";
-    mock.expect().withf(path_params(ZRAM_BD_STAT_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
     assert_eq!(
-        ZramBdStat::load::<MockOps>().unwrap(),
+        ZramBdStat::load::<MockSysfsZramApi>().unwrap(),
         ZramBdStat { bd_count_pages: 1, bd_reads_pages: 2, bd_writes_pages: 3 }
     );
 }
 
 #[test]
 fn test_zram_bd_stat_fail_read() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
-    mock.expect()
-        .withf(path_params(ZRAM_BD_STAT_PATH))
-        .returning(|_| Err(std::io::Error::other("error")));
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_bd_stat_context();
+    mock.expect().returning(|| Err(std::io::Error::other("error")));
 
-    assert!(ZramBdStat::load::<MockOps>().is_err());
+    assert!(ZramBdStat::load::<MockSysfsZramApi>().is_err());
 }
 
 #[test]
 fn test_zram_bd_stat_less_values() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_bd_stat_context();
     let contents = "1 2";
-    mock.expect().withf(path_params(ZRAM_BD_STAT_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
-    assert!(ZramBdStat::load::<MockOps>().is_err());
+    assert!(ZramBdStat::load::<MockSysfsZramApi>().is_err());
 }
 
 #[test]
 fn test_zram_bd_stat_invalid_value() {
-    let _m = OPS_MTX.lock();
-    let mock = MockOps::read_to_string_context();
+    let _m = ZRAM_API_MTX.lock();
+    let mock = MockSysfsZramApi::read_bd_stat_context();
     let contents = "1 2 a";
-    mock.expect().withf(path_params(ZRAM_BD_STAT_PATH)).returning(|_| Ok(contents.to_string()));
+    mock.expect().returning(|| Ok(contents.to_string()));
 
-    assert!(ZramBdStat::load::<MockOps>().is_err());
+    assert!(ZramBdStat::load::<MockSysfsZramApi>().is_err());
 }
