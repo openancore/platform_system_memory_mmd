@@ -36,7 +36,7 @@ fn main() {
         }
     }
 
-    let mmd_service = service::MmdService;
+    let mmd_service = service::MmdService::new();
     let mmd_service_binder = BnMmd::new_binder(mmd_service, BinderFeatures::default());
     binder::add_service("mmd", mmd_service_binder.as_binder()).expect("register service");
 
