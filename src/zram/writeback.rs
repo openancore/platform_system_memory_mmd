@@ -18,6 +18,7 @@
 //!
 //! https://www.kernel.org/doc/Documentation/blockdev/zram.txt
 
+mod history;
 #[cfg(test)]
 mod tests;
 
@@ -28,6 +29,7 @@ use crate::os::get_page_size;
 use crate::os::Ops;
 use crate::zram::idle::calculate_idle_time;
 use crate::zram::idle::set_zram_idle_time;
+use crate::zram::writeback::history::ZramWritebackHistory;
 
 const ZRAM_WRITEBACK_PATH: &str = "/sys/block/zram0/writeback";
 const ZRAM_WRITEBACK_LIMIT_PATH: &str = "/sys/block/zram0/writeback_limit";
@@ -41,6 +43,9 @@ pub enum Error {
     /// no more space for zram writeback
     #[error("no pages in zram for zram writeback")]
     Limit,
+    /// failed to parse writeback_limit
+    #[error("failed to parse writeback_limit")]
+    InvalidWritebackLimit,
     /// failure on setting zram idle
     #[error("calculate zram idle {0}")]
     CalculateIdle(#[from] crate::zram::idle::CalculateError),
@@ -50,7 +55,7 @@ pub enum Error {
     /// failure on writing to /sys/block/zram0/writeback
     #[error("writeback: {0}")]
     Writeback(std::io::Error),
-    /// failure on writing to /sys/block/zram0/writeback_limit
+    /// failure on access to /sys/block/zram0/writeback_limit
     #[error("writeback_limit: {0}")]
     WritebackLimit(std::io::Error),
 }
@@ -75,6 +80,8 @@ pub struct Params {
     pub min_bytes: u64,
     /// Maximum bytes to writeback in 1 round.
     pub max_bytes: u64,
+    /// Maximum bytes to writeback allowed in a day.
+    pub max_bytes_per_day: u64,
 }
 
 impl Default for Params {
@@ -93,6 +100,8 @@ impl Default for Params {
             min_bytes: 5 << 20,
             // 300 MiB
             max_bytes: 300 << 20,
+            // 1 GiB
+            max_bytes_per_day: 1 << 30,
         }
     }
 }
@@ -112,8 +121,14 @@ enum Mode {
     Huge,
 }
 
+fn load_current_writeback_limit<O: Ops>() -> Result<u64> {
+    let contents = O::read_to_string(ZRAM_WRITEBACK_LIMIT_PATH).map_err(Error::WritebackLimit)?;
+    contents.trim().parse().map_err(|_| Error::InvalidWritebackLimit)
+}
+
 /// ZramWriteback manages zram writeback policies.
 pub struct ZramWriteback {
+    history: ZramWritebackHistory,
     last_writeback_at: Option<Instant>,
     total_zram_pages: u64,
     zram_writeback_pages: u64,
@@ -136,7 +151,13 @@ impl ZramWriteback {
         let total_zram_pages = total_zram_size / page_size;
         let zram_writeback_pages = zram_writeback_size / page_size;
         assert!(total_zram_pages != 0);
-        Self { last_writeback_at: None, total_zram_pages, zram_writeback_pages, page_size }
+        Self {
+            history: ZramWritebackHistory::new(),
+            last_writeback_at: None,
+            total_zram_pages,
+            zram_writeback_pages,
+            page_size,
+        }
     }
 
     /// Writes back idle or huge zram pages to disk.
@@ -152,21 +173,26 @@ impl ZramWriteback {
             }
         }
 
+        self.history.cleanup(now);
+        let daily_limit_pages =
+            self.history.calculate_daily_limit(params.max_bytes_per_day / self.page_size, now);
         let limit_pages = self.calculate_writeback_limit(params, stats);
+        let limit_pages = std::cmp::min(limit_pages, daily_limit_pages);
         if limit_pages == 0 {
             return Err(Error::Limit);
         }
         O::write(ZRAM_WRITEBACK_LIMIT_PATH, limit_pages.to_string())
             .map_err(Error::WritebackLimit)?;
+        let mut writeback_limit = load_current_writeback_limit::<O>()?;
 
-        if params.huge_idle {
-            self.writeback::<O>(params, Mode::HugeIdle, now)?;
+        if params.huge_idle && writeback_limit > 0 {
+            writeback_limit = self.writeback::<O>(writeback_limit, params, Mode::HugeIdle, now)?;
         }
-        if params.idle {
-            self.writeback::<O>(params, Mode::Idle, now)?;
+        if params.idle && writeback_limit > 0 {
+            writeback_limit = self.writeback::<O>(writeback_limit, params, Mode::Idle, now)?;
         }
-        if params.huge {
-            self.writeback::<O>(params, Mode::Huge, now)?;
+        if params.huge && writeback_limit > 0 {
+            self.writeback::<O>(writeback_limit, params, Mode::Huge, now)?;
         }
 
         Ok(())
@@ -200,7 +226,13 @@ impl ZramWriteback {
         std::cmp::min(limit_pages, max_pages)
     }
 
-    fn writeback<O: Ops>(&mut self, params: &Params, mode: Mode, now: Instant) -> Result<()> {
+    fn writeback<O: Ops>(
+        &mut self,
+        writeback_limit: u64,
+        params: &Params,
+        mode: Mode,
+        now: Instant,
+    ) -> Result<u64> {
         match mode {
             Mode::HugeIdle | Mode::Idle => {
                 let idle_age = calculate_idle_time::<O>(params.min_idle, params.max_idle)?;
@@ -216,10 +248,19 @@ impl ZramWriteback {
             Mode::Huge => "huge",
         };
 
-        O::write(ZRAM_WRITEBACK_PATH, mode).map_err(Error::Writeback)?;
+        if let Err(e) = O::write(ZRAM_WRITEBACK_PATH, mode) {
+            // If writeback fails, we assume that all writeback_limit was consumed conservatively.
+            self.history.record(writeback_limit, now);
+            return Err(Error::Writeback(e));
+        }
 
         self.last_writeback_at = Some(now);
 
-        Ok(())
+        // If reading writeback_limit fails, we assume that all writeback_limit was consumed
+        // conservatively.
+        let current_writeback_limit = load_current_writeback_limit::<O>().unwrap_or(0);
+        self.history.record(writeback_limit.saturating_sub(current_writeback_limit), now);
+
+        Ok(current_writeback_limit)
     }
 }
