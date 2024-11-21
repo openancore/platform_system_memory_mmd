@@ -15,5 +15,6 @@
 //! This module provides policies to manage zram features.
 
 mod idle;
+pub mod recompression;
 pub mod stats;
 pub mod writeback;

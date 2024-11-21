@@ -25,6 +25,8 @@ use log::error;
 use log::info;
 use log::LevelFilter;
 use mmd::os::OpsImpl;
+use mmd::zram::recompression::is_zram_recompression_activated;
+use mmd::zram::recompression::ZramRecompression;
 use mmd::zram::stats::load_total_zram_size;
 use mmd::zram::writeback::is_zram_writeback_activated;
 use mmd::zram::writeback::ZramWriteback;
@@ -70,7 +72,23 @@ fn main() {
         }
     };
 
-    let mmd_service = service::MmdService::new(zram_writeback);
+    let zram_recompression = match is_zram_recompression_activated::<OpsImpl>() {
+        Ok(is_activated) => {
+            if is_activated {
+                info!("zram recompression is enabled");
+                Some(ZramRecompression::new())
+            } else {
+                info!("zram recompression is disabled");
+                None
+            }
+        }
+        Err(e) => {
+            error!("failed to check zram recompression is activated: {e:?}");
+            None
+        }
+    };
+
+    let mmd_service = service::MmdService::new(zram_writeback, zram_recompression);
     let mmd_service_binder = BnMmd::new_binder(mmd_service, BinderFeatures::default());
     binder::add_service("mmd", mmd_service_binder.as_binder()).expect("register service");
 
