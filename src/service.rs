@@ -22,16 +22,26 @@ use log::error;
 use mmd_aidl_interface::aidl::android::os::IMmd::IMmd;
 
 use mmd::os::OpsImpl;
+use mmd::zram::recompression::Error as ZramRecompressionError;
+use mmd::zram::recompression::ZramRecompression;
 use mmd::zram::writeback::Error as ZramWritebackError;
 use mmd::zram::writeback::ZramWriteback;
 
+struct ZramContext {
+    zram_writeback: Option<ZramWriteback>,
+    zram_recompression: Option<ZramRecompression>,
+}
+
 pub struct MmdService {
-    zram_writeback: Mutex<Option<ZramWriteback>>,
+    ctx: Mutex<ZramContext>,
 }
 
 impl MmdService {
-    pub fn new(zram_writeback: Option<ZramWriteback>) -> Self {
-        Self { zram_writeback: Mutex::new(zram_writeback) }
+    pub fn new(
+        zram_writeback: Option<ZramWriteback>,
+        zram_recompression: Option<ZramRecompression>,
+    ) -> Self {
+        Self { ctx: Mutex::new(ZramContext { zram_writeback, zram_recompression }) }
     }
 }
 
@@ -39,8 +49,18 @@ impl Interface for MmdService {}
 
 impl IMmd for MmdService {
     fn doZramMaintenance(&self) -> BinderResult<()> {
-        let mut zram_writeback = self.zram_writeback.lock().expect("mmd aborts on panics");
-        if let Some(zram_writeback) = zram_writeback.as_mut() {
+        let mut ctx = self.ctx.lock().expect("mmd aborts on panics");
+
+        // Execute recompression before writeback.
+        if let Some(zram_recompression) = ctx.zram_recompression.as_mut() {
+            let params = load_zram_recompression_params();
+            match zram_recompression.mark_and_recompress::<OpsImpl>(&params, Instant::now()) {
+                Ok(_) | Err(ZramRecompressionError::BackoffTime) => {}
+                Err(e) => error!("failed to zram recompress: {e:?}"),
+            }
+        }
+
+        if let Some(zram_writeback) = ctx.zram_writeback.as_mut() {
             let params = load_zram_writeback_params();
             let stats = match load_zram_writeback_stats() {
                 Ok(v) => v,
@@ -54,6 +74,7 @@ impl IMmd for MmdService {
                 Err(e) => error!("failed to zram writeback: {e:?}"),
             }
         }
+
         Ok(())
     }
 }
@@ -70,4 +91,9 @@ fn load_zram_writeback_stats() -> anyhow::Result<mmd::zram::writeback::Stats> {
         orig_data_size: mm_stat.orig_data_size,
         current_writeback_pages: bd_stat.bd_count_pages,
     })
+}
+
+fn load_zram_recompression_params() -> mmd::zram::recompression::Params {
+    // TODO: load params from system properties.
+    mmd::zram::recompression::Params::default()
 }
