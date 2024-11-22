@@ -2,6 +2,9 @@
   "postsubmit": [
     {
       "name": "mmd_unit_tests"
+    },
+    {
+      "name": "libmmd_unit_tests"
     }
   ]
 }

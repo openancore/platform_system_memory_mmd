@@ -21,9 +21,19 @@ mod service;
 use std::time::Duration;
 
 use binder::BinderFeatures;
+use log::error;
 use log::info;
 use log::LevelFilter;
+use mmd::os::OpsImpl;
+use mmd::zram::recompression::is_zram_recompression_activated;
+use mmd::zram::recompression::ZramRecompression;
+use mmd::zram::stats::load_total_zram_size;
+use mmd::zram::writeback::is_zram_writeback_activated;
+use mmd::zram::writeback::ZramWriteback;
 use mmd_aidl_interface::aidl::android::os::IMmd::BnMmd;
+
+// In Android zram writeback file is always "/data/per_boot/zram_swap".
+const ZRAM_WRITEBACK_FILE_PATH: &str = "/data/per_boot/zram_swap";
 
 fn main() {
     let _init_success = logger::init(
@@ -36,13 +46,66 @@ fn main() {
         }
     }
 
-    let mmd_service = service::MmdService;
+    // TODO: This is to wait until swapon_all command sets up zram. Remove this when mmd sets up
+    // zram.
+    std::thread::sleep(Duration::from_secs(60));
+
+    let total_zram_size = match load_total_zram_size::<OpsImpl>() {
+        Ok(v) => v,
+        Err(e) => {
+            error!("failed to load total zram size: {e:?}");
+            std::process::exit(1);
+        }
+    };
+    let zram_writeback = match load_zram_writeback_disk_size() {
+        Ok(Some(zram_writeback_disk_size)) => {
+            info!("zram writeback is enabled");
+            Some(ZramWriteback::new(total_zram_size, zram_writeback_disk_size))
+        }
+        Ok(None) => {
+            info!("zram writeback is disabled");
+            None
+        }
+        Err(e) => {
+            error!("failed to load zram writeback file size: {e:?}");
+            None
+        }
+    };
+
+    let zram_recompression = match is_zram_recompression_activated::<OpsImpl>() {
+        Ok(is_activated) => {
+            if is_activated {
+                info!("zram recompression is enabled");
+                Some(ZramRecompression::new())
+            } else {
+                info!("zram recompression is disabled");
+                None
+            }
+        }
+        Err(e) => {
+            error!("failed to check zram recompression is activated: {e:?}");
+            None
+        }
+    };
+
+    let mmd_service = service::MmdService::new(zram_writeback, zram_recompression);
     let mmd_service_binder = BnMmd::new_binder(mmd_service, BinderFeatures::default());
     binder::add_service("mmd", mmd_service_binder.as_binder()).expect("register service");
 
     info!("mmd started");
 
-    binder::ProcessState::join_thread_pool()
+    binder::ProcessState::join_thread_pool();
+}
+
+/// Loads the zram writeback disk size.
+///
+/// If zram writeback is not enabled, this returns `Ok(None)`.
+pub fn load_zram_writeback_disk_size() -> std::io::Result<Option<u64>> {
+    if is_zram_writeback_activated::<OpsImpl>()? {
+        Ok(Some(std::fs::metadata(ZRAM_WRITEBACK_FILE_PATH)?.len()))
+    } else {
+        Ok(None)
+    }
 }
 
 #[cfg(test)]
