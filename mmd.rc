@@ -5,3 +5,18 @@ service mmd /system/bin/mmd
     critical
     # For calling swapon syscall
     capabilities SYS_ADMIN
+
+on boot
+    chown root mmd /sys/block/zram0/recompress
+    chmod 0220 /sys/block/zram0/recompress
+    chown root mmd /sys/block/zram0/writeback_limit
+    chmod 0664 /sys/block/zram0/writeback_limit
+
+    # /sys/block/zram0/idle and /sys/block/zram0/writeback are used by the
+    # system server managing zram writeback if mmd is disabled. This is
+    # duplicated as /system/core/rootdir/init.rc. But updating the same
+    # permission is safe to do.
+    chown root system /sys/block/zram0/idle
+    chmod 0220 /sys/block/zram0/idle
+    chown root system /sys/block/zram0/writeback
+    chmod 0220 /sys/block/zram0/writeback
