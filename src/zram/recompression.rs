@@ -24,12 +24,10 @@ mod tests;
 use std::time::Duration;
 use std::time::Instant;
 
-use crate::os::Ops;
+use crate::os::MeminfoApi;
 use crate::zram::idle::calculate_idle_time;
 use crate::zram::idle::set_zram_idle_time;
-
-const ZRAM_RECOMP_ALGORITHM_PATH: &str = "/sys/block/zram0/recomp_algorithm";
-const ZRAM_RECOMPRESS_PATH: &str = "/sys/block/zram0/recompress";
+use crate::zram::SysfsZramApi;
 
 /// Error from [ZramRecompression].
 #[derive(Debug, thiserror::Error)]
@@ -51,8 +49,8 @@ pub enum Error {
 type Result<T> = std::result::Result<T, Error>;
 
 /// Check whether zram recompression is activated by checking "/sys/block/zram0/recomp_algorithm".
-pub fn is_zram_recompression_activated<O: Ops>() -> std::io::Result<bool> {
-    match O::read_to_string(ZRAM_RECOMP_ALGORITHM_PATH) {
+pub fn is_zram_recompression_activated<Z: SysfsZramApi>() -> std::io::Result<bool> {
+    match Z::read_recomp_algorithm() {
         Ok(recomp_algorithm) => Ok(!recomp_algorithm.is_empty()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(false),
         Err(e) => Err(e),
@@ -113,7 +111,11 @@ impl ZramRecompression {
     }
 
     /// Recompress idle or huge zram pages.
-    pub fn mark_and_recompress<O: Ops>(&mut self, params: &Params, now: Instant) -> Result<()> {
+    pub fn mark_and_recompress<Z: SysfsZramApi, M: MeminfoApi>(
+        &mut self,
+        params: &Params,
+        now: Instant,
+    ) -> Result<()> {
         if let Some(last_at) = self.last_recompress_at {
             if now - last_at < params.backoff_duration {
                 return Err(Error::BackoffTime);
@@ -121,19 +123,19 @@ impl ZramRecompression {
         }
 
         if params.huge_idle {
-            self.initiate_recompress::<O>(params, Mode::HugeIdle, now)?;
+            self.initiate_recompress::<Z, M>(params, Mode::HugeIdle, now)?;
         }
         if params.idle {
-            self.initiate_recompress::<O>(params, Mode::Idle, now)?;
+            self.initiate_recompress::<Z, M>(params, Mode::Idle, now)?;
         }
         if params.huge {
-            self.initiate_recompress::<O>(params, Mode::Huge, now)?;
+            self.initiate_recompress::<Z, M>(params, Mode::Huge, now)?;
         }
 
         Ok(())
     }
 
-    fn initiate_recompress<O: Ops>(
+    fn initiate_recompress<Z: SysfsZramApi, M: MeminfoApi>(
         &mut self,
         params: &Params,
         mode: Mode,
@@ -141,9 +143,9 @@ impl ZramRecompression {
     ) -> Result<()> {
         match mode {
             Mode::HugeIdle | Mode::Idle => {
-                let idle_age = calculate_idle_time::<O>(params.min_idle, params.max_idle)?;
+                let idle_age = calculate_idle_time::<M>(params.min_idle, params.max_idle)?;
                 // TODO: adjust the idle_age by suspend duration.
-                set_zram_idle_time::<O>(idle_age).map_err(Error::MarkIdle)?;
+                set_zram_idle_time::<Z>(idle_age).map_err(Error::MarkIdle)?;
             }
             Mode::Huge => {}
         }
@@ -160,7 +162,7 @@ impl ZramRecompression {
             format!("type={mode}")
         };
 
-        O::write(ZRAM_RECOMPRESS_PATH, trigger).map_err(Error::Recompress)?;
+        Z::recompress(&trigger).map_err(Error::Recompress)?;
 
         self.last_recompress_at = Some(now);
 

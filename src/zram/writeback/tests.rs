@@ -13,154 +13,143 @@
 // limitations under the License.
 
 use super::*;
-use crate::os::MockOps;
-use crate::test_helper::path_params;
-use crate::test_helper::write_params;
-use crate::test_helper::write_path_params;
-use crate::test_helper::OPS_MTX;
-use crate::zram::idle::MEMINFO_PATH;
-use crate::zram::idle::ZRAM_IDLE_PATH;
+
+use std::sync::LockResult;
+use std::sync::MutexGuard;
+
+use mockall::predicate::*;
 use mockall::Sequence;
+
+use crate::os::MockMeminfoApi;
+use crate::os::MEMINFO_API_MTX;
+use crate::zram::MockSysfsZramApi;
+use crate::zram::ZRAM_API_MTX;
 
 const DEFAULT_TOTAL_ZRAM_SIZE: u64 = 4 << 30;
 const DEFAULT_ZRAM_WRITEBACK_SIZE: u64 = 1 << 30;
 const DEFAULT_PAGE_SIZE: u64 = 4096;
 
-fn setup_default_meminfo(rmock: &crate::os::__mock_MockOps_Ops::__read_to_string::Context) {
-    let meminfo = "MemTotal: 8144296 kB
-        MemAvailable: 346452 kB";
-    rmock.expect().withf(path_params(MEMINFO_PATH)).returning(|_| Ok(meminfo.to_string()));
+struct MockContext<'a> {
+    read_backing_dev:
+        crate::zram::__mock_MockSysfsZramApi_SysfsZramApi::__read_backing_dev::Context,
+    writeback: crate::zram::__mock_MockSysfsZramApi_SysfsZramApi::__writeback::Context,
+    write_writeback_limit:
+        crate::zram::__mock_MockSysfsZramApi_SysfsZramApi::__write_writeback_limit::Context,
+    read_writeback_limit:
+        crate::zram::__mock_MockSysfsZramApi_SysfsZramApi::__read_writeback_limit::Context,
+    set_idle: crate::zram::__mock_MockSysfsZramApi_SysfsZramApi::__set_idle::Context,
+    read_meminfo: crate::os::__mock_MockMeminfoApi_MeminfoApi::__read_meminfo::Context,
+    // Lock will be released after mock contexts are dropped.
+    _meminfo_lock: LockResult<MutexGuard<'a, ()>>,
+    _zram_lock: LockResult<MutexGuard<'a, ()>>,
 }
 
-fn setup_default_writeback_limit_read(
-    rmock: &crate::os::__mock_MockOps_Ops::__read_to_string::Context,
-) {
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .returning(|_| Ok("100\n".to_string()));
+impl<'a> MockContext<'a> {
+    fn new() -> Self {
+        let _zram_lock = ZRAM_API_MTX.lock();
+        let _meminfo_lock = MEMINFO_API_MTX.lock();
+        Self {
+            read_backing_dev: MockSysfsZramApi::read_backing_dev_context(),
+            writeback: MockSysfsZramApi::writeback_context(),
+            write_writeback_limit: MockSysfsZramApi::write_writeback_limit_context(),
+            read_writeback_limit: MockSysfsZramApi::read_writeback_limit_context(),
+            set_idle: MockSysfsZramApi::set_idle_context(),
+            read_meminfo: MockMeminfoApi::read_meminfo_context(),
+            _meminfo_lock,
+            _zram_lock,
+        }
+    }
+
+    fn setup_default_meminfo(&self) {
+        let meminfo = "MemTotal: 8144296 kB
+            MemAvailable: 346452 kB";
+        self.read_meminfo.expect().returning(|| Ok(meminfo.to_string()));
+    }
+
+    fn setup_default_writeback_limit_read(&self) {
+        self.read_writeback_limit.expect().returning(|| Ok("100\n".to_string()));
+    }
 }
 
 #[test]
 fn test_is_zram_writeback_activated() {
-    let _m = OPS_MTX.lock();
-    let rmock = MockOps::read_to_string_context();
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_BACKING_DEV_PATH))
-        .returning(|_| Ok("/dev/dm-1".to_string()));
+    let mock = MockContext::new();
+    mock.read_backing_dev.expect().returning(|| Ok("/dev/dm-1".to_string()));
 
-    assert!(is_zram_writeback_activated::<MockOps>().unwrap());
+    assert!(is_zram_writeback_activated::<MockSysfsZramApi>().unwrap());
 }
 
 #[test]
 fn test_load_zram_writeback_disk_size_writeback_is_not_enabled() {
-    let _m = OPS_MTX.lock();
-    let rmock = MockOps::read_to_string_context();
-    rmock.expect().withf(path_params(ZRAM_BACKING_DEV_PATH)).returning(|_| Ok("none".to_string()));
+    let mock = MockContext::new();
+    mock.read_backing_dev.expect().returning(|| Ok("none".to_string()));
 
-    assert!(!is_zram_writeback_activated::<MockOps>().unwrap());
+    assert!(!is_zram_writeback_activated::<MockSysfsZramApi>().unwrap());
 }
 
 #[test]
 fn test_is_zram_writeback_activated_writeback_is_not_supported() {
-    let _m = OPS_MTX.lock();
-    let rmock = MockOps::read_to_string_context();
-    rmock
+    let mock = MockContext::new();
+    mock.read_backing_dev
         .expect()
-        .withf(path_params(ZRAM_BACKING_DEV_PATH))
-        .returning(|_| Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found")));
+        .returning(|| Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found")));
 
-    assert!(!is_zram_writeback_activated::<MockOps>().unwrap());
+    assert!(!is_zram_writeback_activated::<MockSysfsZramApi>().unwrap());
 }
 
 #[test]
 fn test_is_zram_writeback_activated_failure() {
-    let _m = OPS_MTX.lock();
-    let rmock = MockOps::read_to_string_context();
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_BACKING_DEV_PATH))
-        .returning(|_| Err(std::io::Error::other("error")));
+    let mock = MockContext::new();
+    mock.read_backing_dev.expect().returning(|| Err(std::io::Error::other("error")));
 
-    assert!(is_zram_writeback_activated::<MockOps>().is_err());
+    assert!(is_zram_writeback_activated::<MockSysfsZramApi>().is_err());
 }
 
 #[test]
 fn mark_and_flush_pages() {
-    let _m = OPS_MTX.lock();
+    let mock = MockContext::new();
     let mut seq = Sequence::new();
-    let wmock = MockOps::write_context();
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params::default();
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let mut zram_writeback =
         ZramWriteback::new(DEFAULT_TOTAL_ZRAM_SIZE, DEFAULT_ZRAM_WRITEBACK_SIZE);
 
-    wmock
-        .expect()
-        .withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .times(1)
-        .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_path_params(ZRAM_IDLE_PATH))
-        .times(1)
-        .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "huge_idle"))
-        .times(1)
-        .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_path_params(ZRAM_IDLE_PATH))
-        .times(1)
-        .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "idle"))
-        .times(1)
-        .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "huge"))
-        .times(1)
-        .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
+    mock.write_writeback_limit.expect().times(1).in_sequence(&mut seq).returning(|_| Ok(()));
+    mock.set_idle.expect().times(1).in_sequence(&mut seq).returning(|_| Ok(()));
+    mock.writeback.expect().times(1).in_sequence(&mut seq).returning(|_| Ok(()));
+    mock.set_idle.expect().times(1).in_sequence(&mut seq).returning(|_| Ok(()));
+    mock.writeback.expect().times(1).in_sequence(&mut seq).returning(|_| Ok(()));
+    mock.writeback.expect().times(1).in_sequence(&mut seq).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_before_backoff() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params { backoff_duration: Duration::from_secs(100), ..Default::default() };
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let base_time = Instant::now();
     let mut zram_writeback =
         ZramWriteback::new(DEFAULT_TOTAL_ZRAM_SIZE, DEFAULT_ZRAM_WRITEBACK_SIZE);
-    assert!(zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, base_time).is_ok());
-    wmock.checkpoint();
+    assert!(zram_writeback
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, base_time)
+        .is_ok());
+    mock.writeback.checkpoint();
 
-    wmock.expect().times(0);
+    mock.writeback.expect().times(0);
 
     assert!(matches!(
-        zram_writeback.mark_and_flush_pages::<MockOps>(
+        zram_writeback.mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
             &params,
             &stats,
             base_time + Duration::from_secs(99)
@@ -171,40 +160,46 @@ fn mark_and_flush_pages_before_backoff() {
 
 #[test]
 fn mark_and_flush_pages_after_backoff() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params { backoff_duration: Duration::from_secs(100), ..Default::default() };
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let base_time = Instant::now();
     let mut zram_writeback =
         ZramWriteback::new(DEFAULT_TOTAL_ZRAM_SIZE, DEFAULT_ZRAM_WRITEBACK_SIZE);
-    assert!(zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, base_time).is_ok());
-    wmock.checkpoint();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
+    assert!(zram_writeback
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, base_time)
+        .is_ok());
+    mock.writeback.checkpoint();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
 
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).times(3).returning(|_, _| Ok(()));
+    mock.writeback.expect().times(3).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, base_time + Duration::from_secs(100))
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
+            &params,
+            &stats,
+            base_time + Duration::from_secs(100)
+        )
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_idle_time() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
+    let mock = MockContext::new();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.writeback.expect().returning(|_| Ok(()));
     let meminfo = "MemTotal: 10000 kB
         MemAvailable: 8000 kB";
-    rmock.expect().withf(path_params(MEMINFO_PATH)).returning(|_| Ok(meminfo.to_string()));
-    setup_default_writeback_limit_read(&rmock);
+    mock.read_meminfo.expect().returning(|| Ok(meminfo.to_string()));
+    mock.setup_default_writeback_limit_read();
     let params = Params {
         min_idle: Duration::from_secs(3600),
         max_idle: Duration::from_secs(4000),
@@ -214,21 +209,19 @@ fn mark_and_flush_pages_idle_time() {
     let mut zram_writeback =
         ZramWriteback::new(DEFAULT_TOTAL_ZRAM_SIZE, DEFAULT_ZRAM_WRITEBACK_SIZE);
 
-    wmock.expect().withf(write_params(ZRAM_IDLE_PATH, "3747")).times(2).returning(|_, _| Ok(()));
+    mock.set_idle.expect().with(eq("3747")).times(2).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_calculate_idle_failure() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.setup_default_writeback_limit_read();
     let params = Params {
         min_idle: Duration::from_secs(4000),
         max_idle: Duration::from_secs(3600),
@@ -239,150 +232,109 @@ fn mark_and_flush_pages_calculate_idle_failure() {
         ZramWriteback::new(DEFAULT_TOTAL_ZRAM_SIZE, DEFAULT_ZRAM_WRITEBACK_SIZE);
 
     assert!(matches!(
-        zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now()),
+        zram_writeback.mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
+            &params,
+            &stats,
+            Instant::now()
+        ),
         Err(Error::CalculateIdle(_))
     ));
 }
 
 #[test]
 fn mark_and_flush_pages_mark_idle_failure() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params::default();
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let mut zram_writeback =
         ZramWriteback::new(DEFAULT_TOTAL_ZRAM_SIZE, DEFAULT_ZRAM_WRITEBACK_SIZE);
 
-    wmock
-        .expect()
-        .withf(write_path_params(ZRAM_IDLE_PATH))
-        .returning(|_, _| Err(std::io::Error::other("error")));
+    mock.set_idle.expect().returning(|_| Err(std::io::Error::other("error")));
 
     assert!(matches!(
-        zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now()),
+        zram_writeback.mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
+            &params,
+            &stats,
+            Instant::now()
+        ),
         Err(Error::MarkIdle(_))
     ));
 }
 
 #[test]
 fn mark_and_flush_pages_skip_huge_idle() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params { huge_idle: false, ..Default::default() };
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let mut zram_writeback =
         ZramWriteback::new(DEFAULT_TOTAL_ZRAM_SIZE, DEFAULT_ZRAM_WRITEBACK_SIZE);
 
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "huge_idle"))
-        .times(0)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "idle"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "huge"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.writeback.expect().with(eq("huge_idle")).times(0).returning(|_| Ok(()));
+    mock.writeback.expect().with(eq("idle")).times(1).returning(|_| Ok(()));
+    mock.writeback.expect().with(eq("huge")).times(1).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_skip_idle() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params { idle: false, ..Default::default() };
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let mut zram_writeback =
         ZramWriteback::new(DEFAULT_TOTAL_ZRAM_SIZE, DEFAULT_ZRAM_WRITEBACK_SIZE);
 
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "huge_idle"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "idle"))
-        .times(0)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "huge"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.writeback.expect().with(eq("huge_idle")).times(1).returning(|_| Ok(()));
+    mock.writeback.expect().with(eq("idle")).times(0).returning(|_| Ok(()));
+    mock.writeback.expect().with(eq("huge")).times(1).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_skip_huge() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params { huge: false, ..Default::default() };
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let mut zram_writeback =
         ZramWriteback::new(DEFAULT_TOTAL_ZRAM_SIZE, DEFAULT_ZRAM_WRITEBACK_SIZE);
 
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "huge_idle"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "idle"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "huge"))
-        .times(0)
-        .returning(|_, _| Ok(()));
+    mock.writeback.expect().with(eq("huge_idle")).times(1).returning(|_| Ok(()));
+    mock.writeback.expect().with(eq("idle")).times(1).returning(|_| Ok(()));
+    mock.writeback.expect().with(eq("huge")).times(0).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_write_limit_from_orig_data_size() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params {
         max_bytes: 600 * DEFAULT_PAGE_SIZE,
         min_bytes: 10 * DEFAULT_PAGE_SIZE,
@@ -397,26 +349,20 @@ fn mark_and_flush_pages_write_limit_from_orig_data_size() {
     );
 
     // Writeback limit is 25% of max_bytes.
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_LIMIT_PATH, "150"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.write_writeback_limit.expect().with(eq("150")).times(1).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_write_limit_from_orig_data_size_with_big_page_size() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let page_size = 2 * DEFAULT_PAGE_SIZE;
     let params =
         Params { max_bytes: 600 * page_size, min_bytes: 10 * page_size, ..Default::default() };
@@ -426,26 +372,20 @@ fn mark_and_flush_pages_write_limit_from_orig_data_size_with_big_page_size() {
         ZramWriteback::new_with_page_size(2000 * page_size, 1000 * page_size, page_size);
 
     // Writeback limit is 25% of maxPages.
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_LIMIT_PATH, "150"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.write_writeback_limit.expect().with(eq("150")).times(1).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_write_limit_capped_by_current_writeback_size() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params {
         max_bytes: 600 * DEFAULT_PAGE_SIZE,
         min_bytes: 10 * DEFAULT_PAGE_SIZE,
@@ -461,26 +401,20 @@ fn mark_and_flush_pages_write_limit_capped_by_current_writeback_size() {
     );
 
     // Writeback disk only has 50 pages left.
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_LIMIT_PATH, "50"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.write_writeback_limit.expect().with(eq("50")).times(1).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_write_limit_capped_by_min_pages() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params {
         max_bytes: 500 * DEFAULT_PAGE_SIZE,
         min_bytes: 6 * DEFAULT_PAGE_SIZE,
@@ -495,27 +429,25 @@ fn mark_and_flush_pages_write_limit_capped_by_min_pages() {
     );
 
     // Writeback limit is 5 pages (= 1% of 500 pages). But it is lower than min pages.
-    wmock
-        .expect()
-        .withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .times(0)
-        .returning(|_, _| Ok(()));
+    mock.write_writeback_limit.expect().times(0);
 
     assert!(matches!(
-        zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now()),
+        zram_writeback.mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
+            &params,
+            &stats,
+            Instant::now()
+        ),
         Err(Error::Limit)
     ));
 }
 
 #[test]
 fn mark_and_flush_pages_write_limit_capped_by_daily_limit_with_no_log() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
-    setup_default_writeback_limit_read(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
     let params = Params {
         max_bytes: 600 * DEFAULT_PAGE_SIZE,
         min_bytes: 10 * DEFAULT_PAGE_SIZE,
@@ -531,25 +463,19 @@ fn mark_and_flush_pages_write_limit_capped_by_daily_limit_with_no_log() {
     );
 
     // Writeback limit is 25% of max_bytes. But use smaller maxPagesPerDay as the limit.
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_LIMIT_PATH, "100"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.write_writeback_limit.expect().with(eq("100")).times(1).returning(|_| Ok(()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_write_limit_capped_by_daily_limit() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params {
         max_bytes: 600 * DEFAULT_PAGE_SIZE,
         min_bytes: 10 * DEFAULT_PAGE_SIZE,
@@ -565,45 +491,34 @@ fn mark_and_flush_pages_write_limit_capped_by_daily_limit() {
     let base_point = Instant::now();
 
     // Sets 100 as the daily limit for the first time.
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_LIMIT_PATH, "100"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.write_writeback_limit.expect().with(eq("100")).times(1).returning(|_| Ok(()));
     // Load updated writeback_limit as the initial value.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .times(1)
-        .returning(|_| Ok("100".to_string()));
+    mock.read_writeback_limit.expect().times(1).returning(|| Ok("100".to_string()));
     // On first writeback, 40 pages are written back.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .returning(|_| Ok("60".to_string()));
-
-    assert!(zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, base_point).is_ok());
-
-    // Daily limit with the history is applied on second markAndFlushPages.
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_LIMIT_PATH, "60"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.read_writeback_limit.expect().returning(|| Ok("60".to_string()));
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, base_point + Duration::from_secs(3600))
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, base_point)
+        .is_ok());
+
+    // Daily limit with the history is applied on second markAndFlushPages.
+    mock.write_writeback_limit.expect().with(eq("60")).times(1).returning(|_| Ok(()));
+
+    assert!(zram_writeback
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
+            &params,
+            &stats,
+            base_point + Duration::from_secs(3600)
+        )
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_write_limit_capped_by_daily_limit_expired() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params {
         max_bytes: 600 * DEFAULT_PAGE_SIZE,
         min_bytes: 10 * DEFAULT_PAGE_SIZE,
@@ -619,33 +534,20 @@ fn mark_and_flush_pages_write_limit_capped_by_daily_limit_expired() {
     let base_point = Instant::now();
 
     // Sets 100 as the daily limit for the first time.
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_LIMIT_PATH, "100"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.write_writeback_limit.expect().with(eq("100")).times(1).returning(|_| Ok(()));
     // Load updated writeback_limit as the initial value.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .times(1)
-        .returning(|_| Ok("100\n".to_string()));
+    mock.read_writeback_limit.expect().times(1).returning(|| Ok("100\n".to_string()));
     // On first writeback, 40 pages are written back.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .returning(|_| Ok("60\n".to_string()));
+    mock.read_writeback_limit.expect().returning(|| Ok("60\n".to_string()));
 
-    assert!(zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, base_point).is_ok());
+    assert!(zram_writeback
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, base_point)
+        .is_ok());
 
     // On second time, the history is expired after 24 hours.
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_LIMIT_PATH, "100"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.write_writeback_limit.expect().with(eq("100")).times(1).returning(|_| Ok(()));
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
             &params,
             &stats,
             base_point + Duration::from_secs(24 * 3600)
@@ -655,12 +557,10 @@ fn mark_and_flush_pages_write_limit_capped_by_daily_limit_expired() {
 
 #[test]
 fn mark_and_flush_pages_skip_on_write_limit() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params::default();
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let mut zram_writeback = ZramWriteback::new_with_page_size(
@@ -670,38 +570,25 @@ fn mark_and_flush_pages_skip_on_write_limit() {
     );
 
     // Load updated writeback_limit as the initial value.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .times(1)
-        .returning(|_| Ok("100\n".to_string()));
+    mock.read_writeback_limit.expect().times(1).returning(|| Ok("100\n".to_string()));
     // On first writeback, writeback limit becomes zero and skip following writeback.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .returning(|_| Ok("0\n".to_string()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_WRITEBACK_PATH, "huge_idle"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock.expect().withf(write_params(ZRAM_WRITEBACK_PATH, "idle")).times(0);
-    wmock.expect().withf(write_params(ZRAM_WRITEBACK_PATH, "huge")).times(0);
+    mock.read_writeback_limit.expect().returning(|| Ok("0\n".to_string()));
+    mock.writeback.expect().with(eq("huge_idle")).times(1).returning(|_| Ok(()));
+    mock.writeback.expect().with(eq("idle")).times(0);
+    mock.writeback.expect().with(eq("huge")).times(0);
 
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(&params, &stats, Instant::now())
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, Instant::now())
         .is_ok());
 }
 
 #[test]
 fn mark_and_flush_pages_skip_next_by_daily_limit() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params { max_bytes_per_day: 100 * DEFAULT_PAGE_SIZE, ..Default::default() };
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let mut zram_writeback = ZramWriteback::new_with_page_size(
@@ -712,22 +599,17 @@ fn mark_and_flush_pages_skip_next_by_daily_limit() {
     let base_point = Instant::now();
 
     // Load updated writeback_limit as the initial value.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .times(1)
-        .returning(|_| Ok("100\n".to_string()));
+    mock.read_writeback_limit.expect().times(1).returning(|| Ok("100\n".to_string()));
     // On first writeback, writeback limit becomes zero and skip following writeback.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .returning(|_| Ok("0\n".to_string()));
-    assert!(zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, base_point).is_ok());
+    mock.read_writeback_limit.expect().returning(|| Ok("0\n".to_string()));
+    assert!(zram_writeback
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, base_point)
+        .is_ok());
 
-    wmock.checkpoint();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).times(0);
+    mock.write_writeback_limit.checkpoint();
+    mock.write_writeback_limit.expect().times(0);
     assert!(matches!(
-        zram_writeback.mark_and_flush_pages::<MockOps>(
+        zram_writeback.mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
             &params,
             &stats,
             base_point + params.backoff_duration
@@ -735,13 +617,15 @@ fn mark_and_flush_pages_skip_next_by_daily_limit() {
         Err(Error::Limit)
     ));
 
-    wmock.checkpoint();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
+    mock.write_writeback_limit.checkpoint();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+    mock.setup_default_writeback_limit_read();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
     // writeback succeeds 24 hours after.
     assert!(zram_writeback
-        .mark_and_flush_pages::<MockOps>(
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
             &params,
             &stats,
             base_point + Duration::from_secs(24 * 3600)
@@ -751,12 +635,10 @@ fn mark_and_flush_pages_skip_next_by_daily_limit() {
 
 #[test]
 fn mark_and_flush_pages_fails_to_record_history_by_writeback_error() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params { max_bytes_per_day: 100 * DEFAULT_PAGE_SIZE, ..Default::default() };
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let mut zram_writeback = ZramWriteback::new_with_page_size(
@@ -767,21 +649,16 @@ fn mark_and_flush_pages_fails_to_record_history_by_writeback_error() {
     let base_point = Instant::now();
 
     // Load updated writeback_limit as the initial value.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .times(1)
-        .returning(|_| Ok("100\n".to_string()));
-    wmock
-        .expect()
-        .withf(write_path_params(ZRAM_WRITEBACK_PATH))
-        .returning(|_, _| Err(std::io::Error::other("error")));
-    assert!(zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, base_point).is_err());
+    mock.read_writeback_limit.expect().times(1).returning(|| Ok("100\n".to_string()));
+    mock.writeback.expect().returning(|_| Err(std::io::Error::other("error")));
+    assert!(zram_writeback
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, base_point)
+        .is_err());
 
-    wmock.checkpoint();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).times(0);
+    mock.write_writeback_limit.checkpoint();
+    mock.write_writeback_limit.expect().times(0);
     assert!(matches!(
-        zram_writeback.mark_and_flush_pages::<MockOps>(
+        zram_writeback.mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
             &params,
             &stats,
             base_point + params.backoff_duration
@@ -792,13 +669,11 @@ fn mark_and_flush_pages_fails_to_record_history_by_writeback_error() {
 
 #[test]
 fn mark_and_flush_pages_fails_to_record_history_by_limit_load_error() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.writeback.expect().returning(|_| Ok(()));
+    mock.write_writeback_limit.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params { max_bytes_per_day: 100 * DEFAULT_PAGE_SIZE, ..Default::default() };
     let stats = Stats { orig_data_size: params.max_bytes, ..Default::default() };
     let mut zram_writeback = ZramWriteback::new_with_page_size(
@@ -808,22 +683,17 @@ fn mark_and_flush_pages_fails_to_record_history_by_limit_load_error() {
     );
     let base_point = Instant::now();
 
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .times(1)
-        .returning(|_| Ok("100\n".to_string()));
+    mock.read_writeback_limit.expect().times(1).returning(|| Ok("100\n".to_string()));
     // read writeback_limit fails just after writeback.
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_WRITEBACK_LIMIT_PATH))
-        .returning(|_| Err(std::io::Error::other("error")));
-    assert!(zram_writeback.mark_and_flush_pages::<MockOps>(&params, &stats, base_point).is_ok());
+    mock.read_writeback_limit.expect().returning(|| Err(std::io::Error::other("error")));
+    assert!(zram_writeback
+        .mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(&params, &stats, base_point)
+        .is_ok());
 
-    wmock.checkpoint();
-    wmock.expect().withf(write_path_params(ZRAM_WRITEBACK_LIMIT_PATH)).times(0);
+    mock.write_writeback_limit.checkpoint();
+    mock.write_writeback_limit.expect().times(0);
     assert!(matches!(
-        zram_writeback.mark_and_flush_pages::<MockOps>(
+        zram_writeback.mark_and_flush_pages::<MockSysfsZramApi, MockMeminfoApi>(
             &params,
             &stats,
             base_point + params.backoff_duration

@@ -24,12 +24,12 @@ use binder::BinderFeatures;
 use log::error;
 use log::info;
 use log::LevelFilter;
-use mmd::os::OpsImpl;
 use mmd::zram::recompression::is_zram_recompression_activated;
 use mmd::zram::recompression::ZramRecompression;
 use mmd::zram::stats::load_total_zram_size;
 use mmd::zram::writeback::is_zram_writeback_activated;
 use mmd::zram::writeback::ZramWriteback;
+use mmd::zram::SysfsZramApiImpl;
 use mmd_aidl_interface::aidl::android::os::IMmd::BnMmd;
 
 // In Android zram writeback file is always "/data/per_boot/zram_swap".
@@ -50,7 +50,7 @@ fn main() {
     // zram.
     std::thread::sleep(Duration::from_secs(60));
 
-    let total_zram_size = match load_total_zram_size::<OpsImpl>() {
+    let total_zram_size = match load_total_zram_size::<SysfsZramApiImpl>() {
         Ok(v) => v,
         Err(e) => {
             error!("failed to load total zram size: {e:?}");
@@ -72,7 +72,7 @@ fn main() {
         }
     };
 
-    let zram_recompression = match is_zram_recompression_activated::<OpsImpl>() {
+    let zram_recompression = match is_zram_recompression_activated::<SysfsZramApiImpl>() {
         Ok(is_activated) => {
             if is_activated {
                 info!("zram recompression is enabled");
@@ -101,7 +101,7 @@ fn main() {
 ///
 /// If zram writeback is not enabled, this returns `Ok(None)`.
 pub fn load_zram_writeback_disk_size() -> std::io::Result<Option<u64>> {
-    if is_zram_writeback_activated::<OpsImpl>()? {
+    if is_zram_writeback_activated::<SysfsZramApiImpl>()? {
         Ok(Some(std::fs::metadata(ZRAM_WRITEBACK_FILE_PATH)?.len()))
     } else {
         Ok(None)

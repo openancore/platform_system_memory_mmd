@@ -17,12 +17,9 @@
 #[cfg(test)]
 mod tests;
 
-use crate::os::Ops;
 use std::ops::Deref;
 
-const ZRAM_DISKSIZE_PATH: &str = "/sys/block/zram0/disksize";
-const ZRAM_MM_STAT_PATH: &str = "/sys/block/zram0/mm_stat";
-const ZRAM_BD_STAT_PATH: &str = "/sys/block/zram0/bd_stat";
+use crate::zram::SysfsZramApi;
 
 /// Error from loading zram stats.
 #[derive(Debug, thiserror::Error)]
@@ -50,8 +47,8 @@ fn parse_next_optional<T: std::str::FromStr>(
 }
 
 /// Loads /sys/block/zram0/disksize
-pub fn load_total_zram_size<O: Ops>() -> Result<u64> {
-    let contents = O::read_to_string(ZRAM_DISKSIZE_PATH)?;
+pub fn load_total_zram_size<Z: SysfsZramApi>() -> Result<u64> {
+    let contents = Z::read_disksize()?;
     contents.trim().parse().map_err(|_| Error::Parse)
 }
 
@@ -89,8 +86,8 @@ pub struct ZramMmStat {
 
 impl ZramMmStat {
     /// Parse /sys/block/zram0/mm_stat.
-    pub fn load<O: Ops>() -> Result<Self> {
-        let contents = O::read_to_string(ZRAM_MM_STAT_PATH)?;
+    pub fn load<Z: SysfsZramApi>() -> Result<Self> {
+        let contents = Z::read_mm_stat()?;
         let mut values = contents.split_whitespace();
         Ok(ZramMmStat {
             orig_data_size: parse_next(&mut values)?,
@@ -119,8 +116,8 @@ pub struct ZramBdStat {
 
 impl ZramBdStat {
     /// Parse /sys/block/zram0/bd_stat.
-    pub fn load<O: Ops>() -> Result<Self> {
-        let contents = O::read_to_string(ZRAM_BD_STAT_PATH)?;
+    pub fn load<Z: SysfsZramApi>() -> Result<Self> {
+        let contents = Z::read_bd_stat()?;
         let mut values = contents.split_whitespace();
         Ok(ZramBdStat {
             bd_count_pages: parse_next(&mut values)?,
