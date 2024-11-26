@@ -14,7 +14,115 @@
 
 //! This module provides policies to manage zram features.
 
-mod idle;
+pub mod idle;
 pub mod recompression;
 pub mod stats;
 pub mod writeback;
+
+use std::io;
+
+// Files for zram general information
+const ZRAM_DISKSIZE_PATH: &str = "/sys/block/zram0/disksize";
+const ZRAM_MM_STAT_PATH: &str = "/sys/block/zram0/mm_stat";
+
+// Files for memory tracking
+const ZRAM_IDLE_PATH: &str = "/sys/block/zram0/idle";
+
+// Files for writeback
+const ZRAM_BACKING_DEV_PATH: &str = "/sys/block/zram0/backing_dev";
+const ZRAM_WRITEBACK_PATH: &str = "/sys/block/zram0/writeback";
+const ZRAM_WRITEBACK_LIMIT_PATH: &str = "/sys/block/zram0/writeback_limit";
+const ZRAM_BD_STAT_PATH: &str = "/sys/block/zram0/bd_stat";
+
+// Files for recompression
+const ZRAM_RECOMP_ALGORITHM_PATH: &str = "/sys/block/zram0/recomp_algorithm";
+const ZRAM_RECOMPRESS_PATH: &str = "/sys/block/zram0/recompress";
+
+/// [SysfsZramApi] is a mockable interface for access to files under
+/// "/sys/block/zram0" which is system global.
+///
+/// The naming convention: functions for files which is readable and writable
+///
+/// * fn read_<file_name>() -> io::Result<String>
+/// * fn write_<file_name>(contents: &str) -> io::Result<()>
+///
+/// We don't have naming conventions for files which is writable only.
+#[cfg_attr(test, mockall::automock)]
+pub trait SysfsZramApi {
+    /// Read "/sys/block/zram0/disksize".
+    fn read_disksize() -> io::Result<String>;
+    /// Read "/sys/block/zram0/mm_stat".
+    fn read_mm_stat() -> io::Result<String>;
+
+    /// Write contents to "/sys/block/zram0/idle".
+    fn set_idle(contents: &str) -> io::Result<()>;
+
+    /// Read "/sys/block/zram0/backing_dev".
+    fn read_backing_dev() -> io::Result<String>;
+    /// Write contents to "/sys/block/zram0/writeback".
+    fn writeback(contents: &str) -> io::Result<()>;
+    /// Write contents to "/sys/block/zram0/writeback_limit".
+    fn write_writeback_limit(contents: &str) -> io::Result<()>;
+    /// Read "/sys/block/zram0/writeback_limit".
+    fn read_writeback_limit() -> io::Result<String>;
+    /// Read "/sys/block/zram0/bd_stat".
+    fn read_bd_stat() -> io::Result<String>;
+
+    /// Read "/sys/block/zram0/recomp_algorithm".
+    fn read_recomp_algorithm() -> io::Result<String>;
+    /// Write contents to "/sys/block/zram0/recompress".
+    fn recompress(contents: &str) -> io::Result<()>;
+}
+
+/// The implementation of [SysfsZramApi].
+pub struct SysfsZramApiImpl;
+
+impl SysfsZramApi for SysfsZramApiImpl {
+    fn read_disksize() -> io::Result<String> {
+        std::fs::read_to_string(ZRAM_DISKSIZE_PATH)
+    }
+
+    fn read_mm_stat() -> io::Result<String> {
+        std::fs::read_to_string(ZRAM_MM_STAT_PATH)
+    }
+
+    fn set_idle(contents: &str) -> io::Result<()> {
+        std::fs::write(ZRAM_IDLE_PATH, contents)
+    }
+
+    fn read_backing_dev() -> io::Result<String> {
+        std::fs::read_to_string(ZRAM_BACKING_DEV_PATH)
+    }
+
+    fn writeback(contents: &str) -> io::Result<()> {
+        std::fs::write(ZRAM_WRITEBACK_PATH, contents)
+    }
+
+    fn write_writeback_limit(contents: &str) -> io::Result<()> {
+        std::fs::write(ZRAM_WRITEBACK_LIMIT_PATH, contents)
+    }
+
+    fn read_writeback_limit() -> io::Result<String> {
+        std::fs::read_to_string(ZRAM_WRITEBACK_LIMIT_PATH)
+    }
+
+    fn read_bd_stat() -> io::Result<String> {
+        std::fs::read_to_string(ZRAM_BD_STAT_PATH)
+    }
+
+    fn read_recomp_algorithm() -> io::Result<String> {
+        std::fs::read_to_string(ZRAM_RECOMP_ALGORITHM_PATH)
+    }
+
+    fn recompress(contents: &str) -> io::Result<()> {
+        std::fs::write(ZRAM_RECOMPRESS_PATH, contents)
+    }
+}
+
+/// Mutex to synchronize tests using [MockSysfsZramApi].
+///
+/// mockall for static functions requires synchronization.
+///
+/// https://docs.rs/mockall/latest/mockall/#static-methods
+#[cfg(test)]
+pub static ZRAM_API_MTX: std::sync::Mutex<()> = std::sync::Mutex::new(());
