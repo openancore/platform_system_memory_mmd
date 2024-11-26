@@ -28,6 +28,10 @@ use mmd::zram::writeback::Error as ZramWritebackError;
 use mmd::zram::writeback::ZramWriteback;
 use mmd::zram::SysfsZramApiImpl;
 
+use crate::properties::BoolProp;
+use crate::properties::SecondsProp;
+use crate::properties::U64Prop;
+
 struct ZramContext {
     zram_writeback: Option<ZramWriteback>,
     zram_recompression: Option<ZramRecompression>,
@@ -87,8 +91,17 @@ impl IMmd for MmdService {
 }
 
 fn load_zram_writeback_params() -> mmd::zram::writeback::Params {
-    // TODO: load params from system properties.
-    mmd::zram::writeback::Params::default()
+    let mut params = mmd::zram::writeback::Params::default();
+    params.backoff_duration = SecondsProp::ZramWritebackBackoff.get(params.backoff_duration);
+    params.min_idle = SecondsProp::ZramWritebackMinIdle.get(params.min_idle);
+    params.max_idle = SecondsProp::ZramWritebackMaxIdle.get(params.max_idle);
+    params.huge_idle = BoolProp::ZramWritebackHugeIdleEnabled.get(params.huge_idle);
+    params.idle = BoolProp::ZramWritebackIdleEnabled.get(params.idle);
+    params.huge = BoolProp::ZramWritebackHugeEnabled.get(params.huge);
+    params.min_bytes = U64Prop::ZramWritebackMinBytes.get(params.min_bytes);
+    params.max_bytes = U64Prop::ZramWritebackMaxBytes.get(params.max_bytes);
+    params.max_bytes_per_day = U64Prop::ZramWritebackMaxBytesPerDay.get(params.max_bytes_per_day);
+    params
 }
 
 fn load_zram_writeback_stats() -> anyhow::Result<mmd::zram::writeback::Stats> {
@@ -103,6 +116,13 @@ fn load_zram_writeback_stats() -> anyhow::Result<mmd::zram::writeback::Stats> {
 }
 
 fn load_zram_recompression_params() -> mmd::zram::recompression::Params {
-    // TODO: load params from system properties.
-    mmd::zram::recompression::Params::default()
+    let mut params = mmd::zram::recompression::Params::default();
+    params.backoff_duration = SecondsProp::ZramRecompressionBackoff.get(params.backoff_duration);
+    params.min_idle = SecondsProp::ZramRecompressionMinIdle.get(params.min_idle);
+    params.max_idle = SecondsProp::ZramRecompressionMaxIdle.get(params.max_idle);
+    params.huge_idle = BoolProp::ZramRecompressionHugeIdleEnabled.get(params.huge_idle);
+    params.idle = BoolProp::ZramRecompressionIdleEnabled.get(params.idle);
+    params.huge = BoolProp::ZramRecompressionHugeEnabled.get(params.huge);
+    params.max_mib = U64Prop::ZramRecompressionThresholdMib.get(params.max_mib);
+    params
 }

@@ -16,6 +16,7 @@
 //!
 //! * zram
 
+mod properties;
 mod service;
 
 use std::time::Duration;
@@ -33,6 +34,8 @@ use mmd::zram::writeback::ZramWriteback;
 use mmd::zram::SysfsZramApiImpl;
 use mmd_aidl_interface::aidl::android::os::IMmd::BnMmd;
 use rustutils::system_properties;
+
+use crate::properties::BoolProp;
 
 // In Android zram writeback file is always "/data/per_boot/zram_swap".
 const ZRAM_WRITEBACK_FILE_PATH: &str = "/data/per_boot/zram_swap";
@@ -71,35 +74,45 @@ fn main() {
             std::process::exit(1);
         }
     };
-    let zram_writeback = match load_zram_writeback_disk_size() {
-        Ok(Some(zram_writeback_disk_size)) => {
-            info!("zram writeback is enabled");
-            Some(ZramWriteback::new(total_zram_size, zram_writeback_disk_size))
-        }
-        Ok(None) => {
-            info!("zram writeback is disabled");
-            None
-        }
-        Err(e) => {
-            error!("failed to load zram writeback file size: {e:?}");
-            None
-        }
-    };
-
-    let zram_recompression = match is_zram_recompression_activated::<SysfsZramApiImpl>() {
-        Ok(is_activated) => {
-            if is_activated {
-                info!("zram recompression is enabled");
-                Some(ZramRecompression::new())
-            } else {
-                info!("zram recompression is disabled");
+    let zram_writeback = if BoolProp::ZramWritebackEnabled.get(true) {
+        match load_zram_writeback_disk_size() {
+            Ok(Some(zram_writeback_disk_size)) => {
+                info!("zram writeback is activated");
+                Some(ZramWriteback::new(total_zram_size, zram_writeback_disk_size))
+            }
+            Ok(None) => {
+                info!("zram writeback is not activated");
+                None
+            }
+            Err(e) => {
+                error!("failed to load zram writeback file size: {e:?}");
                 None
             }
         }
-        Err(e) => {
-            error!("failed to check zram recompression is activated: {e:?}");
-            None
+    } else {
+        info!("zram writeback is disabled");
+        None
+    };
+
+    let zram_recompression = if BoolProp::ZramRecompressionEnabled.get(true) {
+        match is_zram_recompression_activated::<SysfsZramApiImpl>() {
+            Ok(is_activated) => {
+                if is_activated {
+                    info!("zram recompression is activated");
+                    Some(ZramRecompression::new())
+                } else {
+                    info!("zram recompression is not activated");
+                    None
+                }
+            }
+            Err(e) => {
+                error!("failed to check zram recompression is activated: {e:?}");
+                None
+            }
         }
+    } else {
+        info!("zram recompression is disabled");
+        None
     };
 
     let mmd_service = service::MmdService::new(zram_writeback, zram_recompression);
@@ -119,13 +132,5 @@ pub fn load_zram_writeback_disk_size() -> std::io::Result<Option<u64>> {
         Ok(Some(std::fs::metadata(ZRAM_WRITEBACK_FILE_PATH)?.len()))
     } else {
         Ok(None)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
     }
 }
