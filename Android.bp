@@ -15,6 +15,7 @@ rust_defaults {
         "libmmd",
         "libmmd_flags_rust",
         "libmockall",
+        "librustutils",
         "mmd_aidl_interface-rust",
     ],
 }

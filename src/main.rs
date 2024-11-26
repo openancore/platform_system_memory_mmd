@@ -23,6 +23,7 @@ use std::time::Duration;
 use binder::BinderFeatures;
 use log::error;
 use log::info;
+use log::warn;
 use log::LevelFilter;
 use mmd::zram::recompression::is_zram_recompression_activated;
 use mmd::zram::recompression::ZramRecompression;
@@ -31,19 +32,32 @@ use mmd::zram::writeback::is_zram_writeback_activated;
 use mmd::zram::writeback::ZramWriteback;
 use mmd::zram::SysfsZramApiImpl;
 use mmd_aidl_interface::aidl::android::os::IMmd::BnMmd;
+use rustutils::system_properties;
 
 // In Android zram writeback file is always "/data/per_boot/zram_swap".
 const ZRAM_WRITEBACK_FILE_PATH: &str = "/data/per_boot/zram_swap";
 
 fn main() {
+    // "mmd --set-property" command copies the AConfig flag to "mmd.enabled_aconfig" system
+    // property as either "true" or "false".
+    // This is the workaround for init language which does not support AConfig integration.
+    // TODO: b/380365026 - Remove "--set-property" command when init language supports AConfig
+    // integration.
+    if std::env::args().nth(1).map(|s| &s == "--set-property").unwrap_or(false) {
+        let value = if mmd_flags::mmd_enabled() { "true" } else { "false" };
+        system_properties::write("mmd.enabled_aconfig", value).expect("set system property");
+        return;
+    }
+
     let _init_success = logger::init(
         logger::Config::default().with_tag_on_device("mmd").with_max_level(LevelFilter::Trace),
     );
+
     if !mmd_flags::mmd_enabled() {
-        info!("mmd is disabled");
-        loop {
-            std::thread::sleep(Duration::MAX);
-        }
+        // It is mmd.rc responsibility to start mmd process only if AConfig flag is enabled.
+        // This is a safe guard to ensure that mmd runs only when AConfig flag is enabled.
+        warn!("mmd is disabled");
+        return;
     }
 
     // TODO: This is to wait until swapon_all command sets up zram. Remove this when mmd sets up
