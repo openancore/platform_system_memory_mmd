@@ -10,11 +10,13 @@ rust_defaults {
     rustlibs: [
         "libanyhow",
         "libbinder_rs",
+        "libflags_rust",
         "liblogger",
         "liblog_rust",
         "libmmd",
         "libmmd_flags_rust",
         "libmockall",
+        "librustutils",
         "mmd_aidl_interface-rust",
     ],
 }

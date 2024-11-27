@@ -15,6 +15,4 @@
 //! This is library part of mmd which does not depends on Android specific APIs.
 
 pub mod os;
-#[cfg(test)]
-mod test_helper;
 pub mod zram;

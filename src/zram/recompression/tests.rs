@@ -13,192 +13,199 @@
 // limitations under the License.
 
 use super::*;
-use crate::os::MockOps;
-use crate::test_helper::path_params;
-use crate::test_helper::write_params;
-use crate::test_helper::write_path_params;
-use crate::test_helper::OPS_MTX;
-use crate::zram::idle::MEMINFO_PATH;
-use crate::zram::idle::ZRAM_IDLE_PATH;
+
+use std::sync::LockResult;
+use std::sync::MutexGuard;
+
+use mockall::predicate::*;
 use mockall::Sequence;
 
-fn setup_default_meminfo(rmock: &crate::os::__mock_MockOps_Ops::__read_to_string::Context) {
-    let meminfo = "MemTotal: 8144296 kB
-        MemAvailable: 346452 kB";
-    rmock.expect().withf(path_params(MEMINFO_PATH)).returning(|_| Ok(meminfo.to_string()));
+use crate::os::MockMeminfoApi;
+use crate::os::MEMINFO_API_MTX;
+use crate::zram::MockSysfsZramApi;
+use crate::zram::ZRAM_API_MTX;
+
+struct MockContext<'a> {
+    read_recomp_algorithm:
+        crate::zram::__mock_MockSysfsZramApi_SysfsZramApi::__read_recomp_algorithm::Context,
+    recompress: crate::zram::__mock_MockSysfsZramApi_SysfsZramApi::__recompress::Context,
+    set_idle: crate::zram::__mock_MockSysfsZramApi_SysfsZramApi::__set_idle::Context,
+    read_meminfo: crate::os::__mock_MockMeminfoApi_MeminfoApi::__read_meminfo::Context,
+    // Lock will be released after mock contexts are dropped.
+    _meminfo_lock: LockResult<MutexGuard<'a, ()>>,
+    _zram_lock: LockResult<MutexGuard<'a, ()>>,
+}
+
+impl<'a> MockContext<'a> {
+    fn new() -> Self {
+        let _zram_lock = ZRAM_API_MTX.lock();
+        let _meminfo_lock = MEMINFO_API_MTX.lock();
+        Self {
+            read_recomp_algorithm: MockSysfsZramApi::read_recomp_algorithm_context(),
+            recompress: MockSysfsZramApi::recompress_context(),
+            set_idle: MockSysfsZramApi::set_idle_context(),
+            read_meminfo: MockMeminfoApi::read_meminfo_context(),
+            _meminfo_lock,
+            _zram_lock,
+        }
+    }
+
+    fn setup_default_meminfo(&self) {
+        let meminfo = "MemTotal: 8144296 kB
+            MemAvailable: 346452 kB";
+        self.read_meminfo.expect().returning(|| Ok(meminfo.to_string()));
+    }
 }
 
 #[test]
 fn test_is_zram_recompression_activated() {
-    let _m = OPS_MTX.lock();
-    let rmock = MockOps::read_to_string_context();
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_RECOMP_ALGORITHM_PATH))
-        .returning(|_| Ok("#1: lzo lzo-rle lz4 [zstd]".to_string()));
+    let mock = MockContext::new();
+    mock.read_recomp_algorithm.expect().returning(|| Ok("#1: lzo lzo-rle lz4 [zstd]".to_string()));
 
-    assert!(is_zram_recompression_activated::<MockOps>().unwrap());
+    assert!(is_zram_recompression_activated::<MockSysfsZramApi>().unwrap());
 }
 
 #[test]
 fn test_is_zram_recompression_activated_not_activated() {
-    let _m = OPS_MTX.lock();
-    let rmock = MockOps::read_to_string_context();
-    rmock.expect().withf(path_params(ZRAM_RECOMP_ALGORITHM_PATH)).returning(|_| Ok("".to_string()));
+    let mock = MockContext::new();
+    mock.read_recomp_algorithm.expect().returning(|| Ok("".to_string()));
 
-    assert!(!is_zram_recompression_activated::<MockOps>().unwrap());
+    assert!(!is_zram_recompression_activated::<MockSysfsZramApi>().unwrap());
 }
 
 #[test]
 fn test_is_zram_recompression_activated_not_supported() {
-    let _m = OPS_MTX.lock();
-    let rmock = MockOps::read_to_string_context();
-    rmock
+    let mock = MockContext::new();
+    mock.read_recomp_algorithm
         .expect()
-        .withf(path_params(ZRAM_RECOMP_ALGORITHM_PATH))
-        .returning(|_| Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found")));
+        .returning(|| Err(std::io::Error::new(std::io::ErrorKind::NotFound, "not found")));
 
-    assert!(!is_zram_recompression_activated::<MockOps>().unwrap());
+    assert!(!is_zram_recompression_activated::<MockSysfsZramApi>().unwrap());
 }
 
 #[test]
 fn test_is_zram_recompression_activated_failure() {
-    let _m = OPS_MTX.lock();
-    let rmock = MockOps::read_to_string_context();
-    rmock
-        .expect()
-        .withf(path_params(ZRAM_RECOMP_ALGORITHM_PATH))
-        .returning(|_| Err(std::io::Error::other("error")));
+    let mock = MockContext::new();
+    mock.read_recomp_algorithm.expect().returning(|| Err(std::io::Error::other("error")));
 
-    assert!(is_zram_recompression_activated::<MockOps>().is_err());
+    assert!(is_zram_recompression_activated::<MockSysfsZramApi>().is_err());
 }
 
 #[test]
 fn mark_and_recompress() {
-    let _m = OPS_MTX.lock();
+    let mock = MockContext::new();
     let mut seq = Sequence::new();
-    let wmock = MockOps::write_context();
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    mock.setup_default_meminfo();
     let params = Params { max_mib: 0, ..Default::default() };
     let mut zram_recompression = ZramRecompression::new();
 
-    wmock
+    mock.set_idle.expect().times(1).in_sequence(&mut seq).returning(|_| Ok(()));
+    mock.recompress
         .expect()
-        .withf(write_path_params(ZRAM_IDLE_PATH))
+        .with(eq("type=huge_idle"))
         .times(1)
         .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
-    wmock
+        .returning(|_| Ok(()));
+    mock.set_idle.expect().times(1).in_sequence(&mut seq).returning(|_| Ok(()));
+    mock.recompress
         .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge_idle"))
+        .with(eq("type=idle"))
         .times(1)
         .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
-    wmock
+        .returning(|_| Ok(()));
+    mock.recompress
         .expect()
-        .withf(write_path_params(ZRAM_IDLE_PATH))
+        .with(eq("type=huge"))
         .times(1)
         .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=idle"))
-        .times(1)
-        .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge"))
-        .times(1)
-        .in_sequence(&mut seq)
-        .returning(|_, _| Ok(()));
+        .returning(|_| Ok(()));
 
-    assert!(zram_recompression.mark_and_recompress::<MockOps>(&params, Instant::now()).is_ok());
+    assert!(zram_recompression
+        .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, Instant::now())
+        .is_ok());
 }
 
 #[test]
 fn mark_and_recompress_with_threshold() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params { max_mib: 12345, ..Default::default() };
     let mut zram_recompression = ZramRecompression::new();
 
-    wmock
+    mock.recompress
         .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge_idle threshold=12345"))
+        .with(eq("type=huge_idle threshold=12345"))
         .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=idle threshold=12345"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge threshold=12345"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+        .returning(|_| Ok(()));
+    mock.recompress.expect().with(eq("type=idle threshold=12345")).times(1).returning(|_| Ok(()));
+    mock.recompress.expect().with(eq("type=huge threshold=12345")).times(1).returning(|_| Ok(()));
 
-    assert!(zram_recompression.mark_and_recompress::<MockOps>(&params, Instant::now()).is_ok());
+    assert!(zram_recompression
+        .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, Instant::now())
+        .is_ok());
 }
 
 #[test]
 fn mark_and_recompress_before_backoff() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.recompress.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params =
         Params { backoff_duration: Duration::from_secs(100), max_mib: 0, ..Default::default() };
     let base_time = Instant::now();
     let mut zram_recompression = ZramRecompression::new();
-    assert!(zram_recompression.mark_and_recompress::<MockOps>(&params, base_time).is_ok());
-    wmock.checkpoint();
+    assert!(zram_recompression
+        .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, base_time)
+        .is_ok());
+    mock.recompress.checkpoint();
 
-    wmock.expect().times(0);
+    mock.recompress.expect().times(0);
 
     assert!(matches!(
-        zram_recompression
-            .mark_and_recompress::<MockOps>(&params, base_time + Duration::from_secs(99)),
+        zram_recompression.mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(
+            &params,
+            base_time + Duration::from_secs(99)
+        ),
         Err(Error::BackoffTime)
     ));
 }
 
 #[test]
 fn mark_and_recompress_after_backoff() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.recompress.expect().returning(|_| Ok(()));
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params =
         Params { backoff_duration: Duration::from_secs(100), max_mib: 0, ..Default::default() };
     let base_time = Instant::now();
     let mut zram_recompression = ZramRecompression::new();
-    assert!(zram_recompression.mark_and_recompress::<MockOps>(&params, base_time).is_ok());
-    wmock.checkpoint();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    wmock.expect().withf(write_path_params(ZRAM_RECOMPRESS_PATH)).times(3).returning(|_, _| Ok(()));
+    assert!(zram_recompression
+        .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, base_time)
+        .is_ok());
+    mock.recompress.checkpoint();
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
+
+    mock.recompress.expect().times(3).returning(|_| Ok(()));
 
     assert!(zram_recompression
-        .mark_and_recompress::<MockOps>(&params, base_time + Duration::from_secs(100))
+        .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(
+            &params,
+            base_time + Duration::from_secs(100)
+        )
         .is_ok());
 }
 
 #[test]
 fn mark_and_recompress_idle_time() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_RECOMPRESS_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
+    let mock = MockContext::new();
+    mock.recompress.expect().returning(|_| Ok(()));
     let meminfo = "MemTotal: 10000 kB
         MemAvailable: 8000 kB";
-    rmock.expect().withf(path_params(MEMINFO_PATH)).returning(|_| Ok(meminfo.to_string()));
+    mock.read_meminfo.expect().returning(|| Ok(meminfo.to_string()));
     let params = Params {
         min_idle: Duration::from_secs(3600),
         max_idle: Duration::from_secs(4000),
@@ -207,16 +214,17 @@ fn mark_and_recompress_idle_time() {
     };
     let mut zram_recompression = ZramRecompression::new();
 
-    wmock.expect().withf(write_params(ZRAM_IDLE_PATH, "3747")).times(2).returning(|_, _| Ok(()));
+    mock.set_idle.expect().with(eq("3747")).times(2).returning(|_| Ok(()));
 
-    assert!(zram_recompression.mark_and_recompress::<MockOps>(&params, Instant::now()).is_ok());
+    assert!(zram_recompression
+        .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, Instant::now())
+        .is_ok());
 }
 
 #[test]
 fn mark_and_recompress_calculate_idle_failure() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_RECOMPRESS_PATH)).returning(|_, _| Ok(()));
+    let mock = MockContext::new();
+    mock.recompress.expect().returning(|_| Ok(()));
     let params = Params {
         min_idle: Duration::from_secs(4000),
         max_idle: Duration::from_secs(3600),
@@ -226,114 +234,75 @@ fn mark_and_recompress_calculate_idle_failure() {
     let mut zram_recompression = ZramRecompression::new();
 
     assert!(matches!(
-        zram_recompression.mark_and_recompress::<MockOps>(&params, Instant::now()),
+        zram_recompression
+            .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, Instant::now()),
         Err(Error::CalculateIdle(_))
     ));
 }
 
 #[test]
 fn mark_and_recompress_mark_idle_failure() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.setup_default_meminfo();
     let params = Params { max_mib: 0, ..Default::default() };
     let mut zram_recompression = ZramRecompression::new();
 
-    wmock
-        .expect()
-        .withf(write_path_params(ZRAM_IDLE_PATH))
-        .returning(|_, _| Err(std::io::Error::other("error")));
+    mock.set_idle.expect().returning(|_| Err(std::io::Error::other("error")));
 
     assert!(matches!(
-        zram_recompression.mark_and_recompress::<MockOps>(&params, Instant::now()),
+        zram_recompression
+            .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, Instant::now()),
         Err(Error::MarkIdle(_))
     ));
 }
 
 #[test]
 fn mark_and_recompress_skip_huge_idle() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params { huge_idle: false, max_mib: 0, ..Default::default() };
     let mut zram_recompression = ZramRecompression::new();
 
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge_idle"))
-        .times(0)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=idle"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.recompress.expect().with(eq("type=huge_idle")).times(0).returning(|_| Ok(()));
+    mock.recompress.expect().with(eq("type=idle")).times(1).returning(|_| Ok(()));
+    mock.recompress.expect().with(eq("type=huge")).times(1).returning(|_| Ok(()));
 
-    assert!(zram_recompression.mark_and_recompress::<MockOps>(&params, Instant::now()).is_ok());
+    assert!(zram_recompression
+        .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, Instant::now())
+        .is_ok());
 }
 
 #[test]
 fn mark_and_recompress_skip_idle() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params { idle: false, max_mib: 0, ..Default::default() };
     let mut zram_recompression = ZramRecompression::new();
 
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge_idle"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=idle"))
-        .times(0)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge"))
-        .times(1)
-        .returning(|_, _| Ok(()));
+    mock.recompress.expect().with(eq("type=huge_idle")).times(1).returning(|_| Ok(()));
+    mock.recompress.expect().with(eq("type=idle")).times(0).returning(|_| Ok(()));
+    mock.recompress.expect().with(eq("type=huge")).times(1).returning(|_| Ok(()));
 
-    assert!(zram_recompression.mark_and_recompress::<MockOps>(&params, Instant::now()).is_ok());
+    assert!(zram_recompression
+        .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, Instant::now())
+        .is_ok());
 }
 
 #[test]
 fn mark_and_recompress_skip_huge() {
-    let _m = OPS_MTX.lock();
-    let wmock = MockOps::write_context();
-    wmock.expect().withf(write_path_params(ZRAM_IDLE_PATH)).returning(|_, _| Ok(()));
-    let rmock = MockOps::read_to_string_context();
-    setup_default_meminfo(&rmock);
+    let mock = MockContext::new();
+    mock.set_idle.expect().returning(|_| Ok(()));
+    mock.setup_default_meminfo();
     let params = Params { huge: false, max_mib: 0, ..Default::default() };
     let mut zram_recompression = ZramRecompression::new();
 
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge_idle"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=idle"))
-        .times(1)
-        .returning(|_, _| Ok(()));
-    wmock
-        .expect()
-        .withf(write_params(ZRAM_RECOMPRESS_PATH, "type=huge"))
-        .times(0)
-        .returning(|_, _| Ok(()));
+    mock.recompress.expect().with(eq("type=huge_idle")).times(1).returning(|_| Ok(()));
+    mock.recompress.expect().with(eq("type=idle")).times(1).returning(|_| Ok(()));
+    mock.recompress.expect().with(eq("type=huge")).times(0).returning(|_| Ok(()));
 
-    assert!(zram_recompression.mark_and_recompress::<MockOps>(&params, Instant::now()).is_ok());
+    assert!(zram_recompression
+        .mark_and_recompress::<MockSysfsZramApi, MockMeminfoApi>(&params, Instant::now())
+        .is_ok());
 }

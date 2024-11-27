@@ -5,6 +5,7 @@ service mmd /system/bin/mmd
     critical
     # For calling swapon syscall
     capabilities SYS_ADMIN
+    disabled
 
 on boot
     chown root mmd /sys/block/zram0/recompress
@@ -20,3 +21,16 @@ on boot
     chmod 0220 /sys/block/zram0/idle
     chown root system /sys/block/zram0/writeback
     chmod 0220 /sys/block/zram0/writeback
+
+on property:sys.boot_completed=1
+    # Copy AConfig flag value to "mmd.enabled_aconfig" system property because
+    # AConfig flag does not support init "on property" trigger.
+    # mmd service starts only if AConfig flag is enabled when boot_completed.
+    # Copying the value on boot_completed once is enough because AConfig is
+    # static during a device lifetime.
+    exec /system/bin/mmd --set-property
+
+on property:mmd.enabled_aconfig=true
+    # Enable mmd daemon if the system property copied from AConfig flag by
+    # "/system/bin/mmd --set-property" is enabled.
+    enable mmd
