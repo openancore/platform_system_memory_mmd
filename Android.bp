@@ -29,7 +29,6 @@ rust_defaults {
     rustlibs: [
         "liblibc",
         "libmockall",
-        "libnix",
         "libthiserror",
     ],
 }

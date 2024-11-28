@@ -37,7 +37,6 @@ fn generate_property_name(flag_name: &str) -> String {
 /// clippy::enum_variant_names is allowed because we may add more properties.
 #[allow(clippy::enum_variant_names)]
 pub enum BoolProp {
-    ZramEnabled,
     ZramWritebackEnabled,
     ZramWritebackHugeIdleEnabled,
     ZramWritebackIdleEnabled,
@@ -51,7 +50,6 @@ pub enum BoolProp {
 impl BoolProp {
     fn flag_name(&self) -> &'static str {
         match self {
-            Self::ZramEnabled => "zram.enabled",
             Self::ZramWritebackEnabled => "zram.writeback.enabled",
             Self::ZramWritebackHugeIdleEnabled => "zram.writeback.huge_idle.enabled",
             Self::ZramWritebackIdleEnabled => "zram.writeback.idle.enabled",
@@ -133,26 +131,6 @@ impl SecondsProp {
         } else {
             default
         }
-    }
-}
-
-/// String system properties for mmd.
-///
-/// clippy::enum_variant_names is allowed because we may add more properties.
-#[allow(clippy::enum_variant_names)]
-pub enum StringProp {
-    ZramSize,
-}
-
-impl StringProp {
-    fn flag_name(&self) -> &'static str {
-        match self {
-            Self::ZramSize => "zram.size",
-        }
-    }
-
-    pub fn get(&self, default: &str) -> String {
-        read(self.flag_name()).unwrap_or_else(|| default.to_string())
     }
 }
 
