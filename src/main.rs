@@ -19,8 +19,6 @@
 mod properties;
 mod service;
 
-use std::time::Duration;
-
 use binder::BinderFeatures;
 use log::error;
 use log::info;
@@ -28,6 +26,10 @@ use log::warn;
 use log::LevelFilter;
 use mmd::zram::recompression::is_zram_recompression_activated;
 use mmd::zram::recompression::ZramRecompression;
+use mmd::zram::setup::activate_zram;
+use mmd::zram::setup::is_zram_swap_activated;
+use mmd::zram::setup::parse_zram_size_spec;
+use mmd::zram::setup::SetupApiImpl;
 use mmd::zram::stats::load_total_zram_size;
 use mmd::zram::writeback::is_zram_writeback_activated;
 use mmd::zram::writeback::ZramWriteback;
@@ -36,9 +38,23 @@ use mmd_aidl_interface::aidl::android::os::IMmd::BnMmd;
 use rustutils::system_properties;
 
 use crate::properties::BoolProp;
+use crate::properties::StringProp;
 
 // In Android zram writeback file is always "/data/per_boot/zram_swap".
 const ZRAM_WRITEBACK_FILE_PATH: &str = "/data/per_boot/zram_swap";
+
+fn setup_zram() -> anyhow::Result<()> {
+    let zram_activated = is_zram_swap_activated::<SetupApiImpl>()?;
+    if zram_activated {
+        info!("zram is already on, skipping zram setup");
+        return Ok(());
+    }
+
+    let zram_size_spec = StringProp::ZramSize.get("50%");
+    let zram_size = parse_zram_size_spec(&zram_size_spec)?;
+    activate_zram::<SysfsZramApiImpl, SetupApiImpl>(zram_size)?;
+    Ok(())
+}
 
 fn main() {
     // "mmd --set-property" command copies the AConfig flag to "mmd.enabled_aconfig" system
@@ -63,9 +79,9 @@ fn main() {
         return;
     }
 
-    // TODO: This is to wait until swapon_all command sets up zram. Remove this when mmd sets up
-    // zram.
-    std::thread::sleep(Duration::from_secs(60));
+    if BoolProp::ZramEnabled.get(false) {
+        setup_zram().expect("zram setup");
+    }
 
     let total_zram_size = match load_total_zram_size::<SysfsZramApiImpl>() {
         Ok(v) => v,
