@@ -8,13 +8,6 @@ service mmd /system/bin/mmd
     disabled
 
 on boot
-    # Allow mmd to run mkswap on zram device
-    chown root mmd /dev/block/zram0
-    chmod 0664 /dev/block/zram0
-    # Allow mmd to update zram disk size
-    chown root mmd /sys/block/zram0/disksize
-    chmod 0664 /sys/block/zram0/disksize
-
     chown root mmd /sys/block/zram0/recompress
     chmod 0220 /sys/block/zram0/recompress
     chown root mmd /sys/block/zram0/writeback_limit
