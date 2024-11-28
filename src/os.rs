@@ -16,9 +16,6 @@
 
 use std::io;
 
-use nix::unistd::sysconf;
-use nix::unistd::SysconfVar;
-
 const MEMINFO_PATH: &str = "/proc/meminfo";
 
 /// [MeminfoApi] is a mockable interface for access to "/proc/meminfo".
@@ -49,11 +46,4 @@ pub static MEMINFO_API_MTX: std::sync::Mutex<()> = std::sync::Mutex::new(());
 pub fn get_page_size() -> u64 {
     // SAFETY: `sysconf` simply returns an integer.
     unsafe { libc::sysconf(libc::_SC_PAGESIZE) as u64 }
-}
-
-/// Returns the page count of the system.
-pub fn get_page_count() -> u64 {
-    sysconf(SysconfVar::_PHYS_PAGES)
-        .expect("PHYS_PAGES should be a valid sysconf variable")
-        .expect("PHYS_PAGES variable should be supported") as u64
 }
