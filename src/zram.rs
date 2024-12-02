@@ -16,6 +16,7 @@
 
 pub mod idle;
 pub mod recompression;
+pub mod setup;
 pub mod stats;
 pub mod writeback;
 
@@ -51,6 +52,8 @@ const ZRAM_RECOMPRESS_PATH: &str = "/sys/block/zram0/recompress";
 pub trait SysfsZramApi {
     /// Read "/sys/block/zram0/disksize".
     fn read_disksize() -> io::Result<String>;
+    /// Write "/sys/block/zram0/disksize".
+    fn write_disksize(contents: &str) -> io::Result<()>;
     /// Read "/sys/block/zram0/mm_stat".
     fn read_mm_stat() -> io::Result<String>;
 
@@ -80,6 +83,10 @@ pub struct SysfsZramApiImpl;
 impl SysfsZramApi for SysfsZramApiImpl {
     fn read_disksize() -> io::Result<String> {
         std::fs::read_to_string(ZRAM_DISKSIZE_PATH)
+    }
+
+    fn write_disksize(contents: &str) -> io::Result<()> {
+        std::fs::write(ZRAM_DISKSIZE_PATH, contents)
     }
 
     fn read_mm_stat() -> io::Result<String> {
